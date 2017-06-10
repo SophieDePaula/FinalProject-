@@ -1,0 +1,3144 @@
+#Script #1 appendix A
+#this script unites 3 tables from UCSC, in order to add the type of alternative #splicing and the location of exon start and exon end to each gene
+
+#***********************- pseudo code -*************************
+# 1. foreach row in table REFALT
+#   1.1. extract location data of alt splicing variant 
+#   1.2. find according to this location the matching row in table ALTEV
+#       1.2.1. if exists
+#           1.2.1.1 print to TOUT the variant + the alt splicing type column from table ALTEV
+# 2. foreach row in table TOUT
+#   2.1 extract gene ID of alt splicing variant
+#   2.2. find according to this gene ID the matching row in table refseq
+#       2.2.1. print to OUT the variant + exons data columns from table refseq
+#***************************************************************
+
+open(REFALT, "RefSeq_Alt") or die "Could not open RefSeq_Alt";  # UCSC table of alternative splicing events and refseq genes - size: 30,289
+open(ALTEV, "AltEvents") or die "Could not open AltEvents";         # UCSC table of alternative events - size: 91,223
+open(REFSEQ, "refseq") or die "Could not open refseq";          # UCSC table of refseq genes - size: 41,748
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(TOUT, ">tempAltEventsWithType") or die "Could not open AltEventsWithType"; # temp output file
+open(OUT, ">AltEventsWithType") or die "Could not open AltEventsWithType";  # output file
+
+# print header of temp result table
+print TOUT "chrom\trefseqGeneChromStart\trefseqGeneChromEnd\tAltEventsChromStart\tAltEventsChromEnd\tgeneID\trefseqcore\tstrand\trefseqTranscriptStart\trefseqTranscriptEnd\ttranscriptScore\tAltEventType\tnumberOfExons\n";
+
+# column variables for each line in REFALT table
+$chrom;         # Reference sequence chromosome or scaffold 
+$chromStart;        # Start position in chromosome
+$chromEnd;      # End position in chromosome
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$score;         # AltEvents table Score, from 0-1000
+$strand;        # + or - for strand
+$codingStart;   # Transcription start position
+$codingEnd;     # Transcription end position
+$transcriptScore;   # Transcription score
+$numberOfExons;     # Number of exons
+
+$line = <REFALT>;
+print LOG "lines of RefSeq_Alt\n";
+
+while (defined ($line)) # foreach row in table REFALT
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray[0];         
+    $chromStart = $LineArray[1];        
+    $chromEnd = $LineArray[2];      
+    $geneID = $LineArray[3];        
+    $score = $LineArray[4];         
+    $strand = $LineArray[5];        
+    $codingStart = $LineArray[6];   
+    $codingEnd = $LineArray[7];     
+    $transcriptScore = $LineArray[8];   
+    $numberOfExons = $LineArray[9]; 
+
+    print LOG "chrom = " . $chrom . ";; ";
+    print LOG "chromStart = " . $chromStart . ";; ";
+    print LOG "chromEnd = " . $chromEnd . ";; ";
+    print LOG "geneID = " . $geneID . ";; ";
+    print LOG "score = " . $score . ";; ";
+    print LOG "strand = " . $strand . ";; ";
+    print LOG "codingStart = " . $codingStart . ";; ";
+    print LOG "codingEnd = " . $codingEnd . ";; ";
+    print LOG "transcriptScore = " . $transcriptScore . ";; ";  
+    print LOG "numberOfExons = " . $numberOfExons . "\n";
+
+    # 1.1. extract location data of alt splicing variant 
+    findAlternativeSplicingTypeByLocation($chrom, $chromStart, $chromEnd, $strand);
+
+    $line = <REFALT>; # take next line from table
+}
+
+close(TOUT);
+open(TOUT, "tempAltEventsWithType") or die "Could not open AltEventsWithType";  # temp output file
+
+# print header of result table
+print OUT "chrom\trefseqGeneChromStart\trefseqGeneChromEnd\tAltEventsChromStart\tAltEventsChromEnd\tgeneID\trefseqcore\tstrand\trefseqcodingStart\trefseqcodingEnd\ttranscriptScore\tAltEventType\trefseqTranscriptStart\trefseqTranscriptEnd\trefseqExonCount\trefseqExonStarts\trefseqExonEnds\tsecondName\n";
+
+%refseqMap;     # map of exon information - key{$geneID}   value{$cdsStart \t $cdsEnd \t $exonCount \t $exonStarts \t $exonEnds \t $secondName}
+
+# column variables for each line in REFSEQ table
+$bin;           # Indexing field to speed chromosome range queries.
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$chrom;         # Reference sequence chromosome or scaffold
+$strand;        # + or - for strand
+$txStart;       # Transcription start position
+$txEnd;         # Transcription end position
+$cdsStart;      # Coding region start
+$cdsEnd;        # Coding region end
+$exonCount;     # Number of exons
+$exonStarts;        # Exon start positions
+$exonEnds;      # Exon end positions
+$score;         # score
+$secondName;        # Alternate name (e.g. gene_id from GTF)
+
+$line = <REFSEQ>; # jump over header in top of the table
+$line = <REFSEQ>;
+print LOG "lines of RefSeq into % refseqMap\n";
+
+while (defined ($line)) # fill data in %refseqMap Map from REFSEQ table
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $bin = $LineArray[0];   
+    $geneID = $LineArray[1];
+    $chrom = $LineArray[2];
+    $strand = $LineArray[3];
+    $txStart = $LineArray[4];
+    $txEnd = $LineArray[5];
+    $cdsStart = $LineArray[6];
+    $cdsEnd = $LineArray[7];
+    $exonCount = $LineArray[8];
+    $exonStarts = $LineArray[9];
+    $exonEnds = $LineArray[10];
+    $score = $LineArray[11];
+    $secondName = $LineArray[12];
+    chomp($geneID);
+
+    $refseqMap{$geneID} = $txStart."\t".$txEnd."\t".$exonCount."\t".$exonStarts."\t".$exonEnds."\t".$secondName;
+    print LOG "refseqMap{".$geneID."} = ".$refseqMap{$geneID}."\n";
+    
+    $line = <REFSEQ>; # take next line from table
+}
+
+# column variables for each line in TOUT table
+$chrom;         # Reference sequence chromosome or scaffold 
+$refseqChromStart;  # Start position in chromosome according to refseq table
+$refseqChromEnd;    # End position in chromosome accodrding to refseq table
+$altEvChromStart;   # Start position in chromosome according to AltEvents table
+$altEvChromEnd;     # End position in chromosome accodrding to AltEvents table
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$score;         # AltEvents table Score, from 0-1000
+$strand;        # + or - for strand
+$transcriptStart;   # Transcription start position
+$transcriptEnd;     # Transcription end position
+$transcriptScore;   # Transcription score
+$altEventType;      # type of alternative splicing event - more explantions in attached file 'Alternative Splicing type UCSC'
+$numberOfExons;     # Number of exons
+
+$line = <TOUT>; # jump over header in top of the table
+$line = <TOUT>;
+
+# 2. foreach row in table TOUT
+while (defined ($line)) 
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray[0];
+    $refseqChromStart = $LineArray[1];
+    $refseqChromEnd = $LineArray[2];
+    $altEvChromStart = $LineArray[3];
+    $altEvChromEnd = $LineArray[4];
+    $geneID = $LineArray[5];
+    $score = $LineArray[6];
+    $strand = $LineArray[7];
+    $codingStart = $LineArray[8];
+    $codingEnd = $LineArray[9];
+    $transcriptScore = $LineArray[10];
+    $altEventType = $LineArray[11];
+    $numberOfExons = $LineArray[12];
+    chomp($geneID); # 2.1 extract gene ID of alt splicing variant
+    
+    # 2.2. find according to this gene ID the matching row in table refseq
+    if(defined($refseqMap{$geneID}))
+    {
+        # 2.2.1. print to OUT the variant + exons data columns from table refseq
+        print OUT $chrom."\t".$refseqChromStart."\t".$refseqChromEnd."\t".$altEvChromStart."\t".$altEvChromEnd."\t".$geneID."\t".$score."\t".$strand."\t".$codingStart."\t".$codingEnd."\t".$transcriptScore."\t".$altEventType."\t".$refseqMap{$geneID}."\n";
+    }
+    
+    $line = <TOUT>; # take next line from table
+}
+
+
+close(REFALT);  
+close(ALTEV);   
+close(REFSEQ);  
+close(LOG);         
+close(OUT);
+close(TOUT);
+
+
+#findAlternativeSplicingTypeByLocation( $chrom, $chromStart, $chromEnd, $strand)
+sub findAlternativeSplicingTypeByLocation
+{
+    seek(ALTEV, 0, SEEK_SET);   # move file cursor to start of file
+    my $i_chrom = $_[0];        # input parameter
+    my $i_chromStart = $_[1];   # input parameter
+    my $i_chromEnd = $_[2];     # input parameter
+    my $i_strand = $_[3];       # input parameter
+    my @i_LineArray;
+
+    # column variables for each line in ALTEV table
+    my $tempChrom;          
+    my $tempChromStart;     
+    my $tempChromEnd;       
+    my $tempStrand;         
+    my $tempAltType;    # type of alternative splicing event - more explantions in attached file 'Alternative Splicing type UCSC'
+
+    print LOG "\nfindAlternativeSplicingTypeByLocation ( ".$i_chrom." , ".$i_chromStart." , ".$i_chromEnd." , ".$i_strand. " )\n\n";
+    
+    my $i_line = <ALTEV>; # jump over header in top of the table
+    my $i_line = <ALTEV>;
+
+    while (defined ($i_line)) # 1.2. find according to input location parameters the matching row in table ALTEV
+    {
+        @i_LineArray = split(/\t/,$i_line); # splitting the line to the columns
+        $tempChrom = $i_LineArray[1];           
+        $tempChromStart = $i_LineArray[2];      
+        $tempChromEnd = $i_LineArray[3];        
+        $tempStrand = $i_LineArray[6];          
+        $tempAltType = $i_LineArray[4];
+        chomp($i_chrom);
+        chomp($tempChrom);
+        chomp($i_strand);
+        chomp($tempStrand);
+        
+        if (($i_chrom eq $tempChrom) && ($i_strand eq $tempStrand))
+        {
+            if (($i_chromStart <= $tempChromStart) && ($i_chromEnd >= $tempChromEnd)) # 1.2.1. if exists
+            {
+                # 1.2.1.1 print to TOUT the variant + the alt splicing type column from table ALTEV
+                print TOUT $tempChrom."\t".$i_chromStart."\t".$i_chromEnd."\t".$tempChromStart."\t".$tempChromEnd."\t".$geneID."\t".$score."\t".$strand."\t".$codingStart."\t".$codingEnd."\t".$transcriptScore."\t".$tempAltType."\t".$numberOfExons."\n";
+            }
+        }   
+
+        $i_line = <ALTEV>; # take next line from table
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Script #2 appendix B
+
+
+#this script unites 2 tables and finds their intersection, in order to find all #the genes that contains synonymous SNPs.
+
+#***********************- pseudo code -***************************************************************************************
+# 1. foreach row in table AltEventsWithType
+#   1.1. extract the chromosome number 
+#   1.2  extract the strand
+#   1.3  extract the transcription start and end
+#   1.4  extract the rest of the relevent data 
+#   1.5 put everything in a hashtable, the key = gene id, value = the rest of the data
+#2. foreach row in table snp135
+#   2.1 extract the relevent data.
+#   2.2 call findSnpInAlternativeSplicingEvent function with the chromosome number, strand,SNP location,SNP Id and allels fields.
+#
+#findSnpInAlternativeSplicingEvent:
+#   1.comper the chromosome number of the alternative splicing event and the snp
+#       1.1 if it mach
+#           1.1.1 comper the strand of the alternative splicing event and the snp.
+#               1.1.1.1 if it mach
+#                   1.1.1.1.1 comper the start and end of the transcription area and the snp locatoin
+#                       1.1.1.1.1.1 if it mach
+#                           1.1.1.1.1.1.1 print to OUT the relevent data
+#******************************************************************************************************************************
+
+open(ALTEV, "AltEventsWithType") or die "Could not open RefSeq_Alt";    # The output from script 4 size: 171,884
+open(SNP135, "snp135") or die "Could not open AltEvents";       # UCSC table of synonymous SNPs size: 38,301
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(OUT, ">SNP splicing joining") or die "Could not open AltEventsWithType";   # output file
+open(MAP, ">maps") or die "Could not open AltEventsWithType";
+open(TOUT, ">tempSnp") or die "Could not open tempSnp";
+
+$chrom;         # Reference sequence chromosome or scaffold 
+$codigSeqStart; # coding start position
+$codigSeqEnd;   # coding end position
+$strand;        # + or - for strand
+$transcriptStart;   # Transcription start position
+$transcriptEnd;     # Transcription end position
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$AltEvnetType;  # alternative splicing type
+$numberOfExons;     # Number of exons
+$ExonsStart;            # start positions of exons
+$ExonsEnd;          # end positions of exons
+
+$line = <ALTEV>; #skip the unrelevent row
+$line = <ALTEV>; 
+
+while (defined ($line)) # foreach row in table aternative splicing event
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray[0]; 
+    $chromStart = $LineArray[1];
+    $chromEnd = $LineArray[2];
+    $geneId = $LineArray[5];
+    $strand = $LineArray[7];
+    $transcriptStart = $LineArray[12];
+    $transcriptEnd = $LineArray[13];
+    $AltEvnetType = $LineArray[11];
+    $codigSeqStart = $LineArray[8];
+    $codigSeqEnd = $LineArray[9];
+    $numberOfExons = $LineArray[14];
+    $ExonsStart = $LineArray[15];
+    $ExonsEnd = $LineArray[16];
+        
+    print LOG "chrom = " . $chrom . ";; ";
+    print LOG "strand = " . $strand . ";; ";
+    print LOG "start coding = ".$codigSeqStart.";; ";
+    print LOG "end coding = ".$codigSeqEnd.";; ";
+    print LOG "geneID = " . $geneId . ";; ";
+    print LOG "alterantive splicing type = ". $AltEvnetType. ";;" ;
+    print LOG "score = " . $score . ";; ";
+    print LOG "transcriptStart = " . $transcriptStart . ";; ";
+    print LOG "transcriptEnd = " . $transcriptEnd . ";; ";
+    print LOG "numberOfExons = " . $numberOfExons . ";; ";
+    print LOG "start positions of exons = " . $ExonsStart . ";; ";
+    print LOG "end positions of exons = " . $ExonsEnd . "\n";
+    
+    $AltEventsMap{$geneId} = $chrom."\t".$strand."\t".$codigSeqStart."\t".$codigSeqEnd."\t".$transcriptStart."\t".$transcriptEnd."\t".$geneId."\t".$numberOfExons."\t".$ExonsStart."\t".$ExonsEnd."\t".$AltEvnetType."\t".$chromStart."\t".$chromEnd;
+    $line = <ALTEV>; # take next line from table
+}
+
+$line = <SNP135>;
+$line = <SNP135>;   #skip unrelevent rows
+$line = <SNP135>;
+
+print OUT "chrom chromStart chromEnd strand geneId codigSeqStart codigSeqEnd transcriptStart transcriptEnd SNPlocation Allels SNPId alternativeSplicingType numberOfExons ExonsStart ExonsEnd\n";
+
+while (defined ($line)) # foreach row in table SNP
+{
+    chomp($line);
+    @LineArray2 = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray2[1];
+    $SNPlocation = $LineArray2[2];
+    $SNPId = $LineArray2[4];
+    $strand = $LineArray2[6];
+    $Allels = $LineArray2[9];
+    
+    print LOG "chrom = " . $chrom . ";; ";
+    print LOG "SNP location = ".$SNPlocation.";; ";
+    print LOG "SNP name = ".$SNPname.";; ";
+    print LOG "strand = ".$strand.";; ";
+    print LOG "Allels = ".$Allels."\n ";
+    
+    findSnpInAlternativeSplicingEvent($chrom, $strand, $SNPlocation,$SNPId,$Allels);
+    $line = <SNP135>;
+}
+
+close(OUT);
+
+
+#findAlternativeSplicingTypeByLocation($chrom, $strand, $SNPlocation,$SNPId,$Allels)
+sub findSnpInAlternativeSplicingEvent
+{
+    my $chrom = $_[0];
+    my $strand = $_[1];
+    my $SNPlocation = $_[2];
+    my $SNPId = $_[3];
+    my $Allels = $_[4];
+
+    foreach $geneId(%AltEventsMap)
+    {
+        $geneInfo = $AltEventsMap{$geneId};
+        chomp($geneInfo);
+        @AltArray = split(/\t/,$geneInfo); # splitting the line of every value in a line of the map
+        if($AltArray[0] eq $chrom)
+        {   
+            if($AltArray[1] eq $strand)
+            {   
+                if(($AltArray[2] <= $SNPlocation) && ($AltArray[3] >= $SNPlocation))
+                    {   
+                        print TOUT $AltArray[0]." == ".$chrom." ".$AltArray[1]." == ".$strand." ".$AltArray[4]." <= ".$SNPlocation." && ".$AltArray[5].">= ".$SNPlocation."\n";
+                        print OUT $AltArray[0]."\t".$AltArray[11]."\t".$AltArray[12]."\t".$AltArray[1]."\t".$AltArray[6]."\t".$AltArray[2]."\t".$AltArray[3]."\t".$AltArray[4]."\t".$AltArray[5]."\t".$SNPlocation."\t".$Allels."\t".$SNPId."\t".$AltArray[10]."\t".$AltArray[7]."\t".$AltArray[8]."\t".$AltArray[9]."\n";
+                    }
+            }
+        }
+    }
+}
+
+
+
+
+#Script #3 appendix C
+
+#this script finds all genes from the previous table that contains synonymous #SNPs at the first or last 50 nucleotides of exon
+
+#***********************- pseudo code -*************************
+# 1. foreach row in table SNPSPL
+#   1.1. extract exon data of alt splicing variant and SNP location
+#   1.2. foreach exon start and end location check if SNP is in the first 50 bp or last 50 bp of exon
+#       1.2.1. if SNP is in range of some exon
+#           1.2.1.1 print to OUT the variant + exon number that SNP is in the range of
+#***************************************************************
+
+# joining of UCSC tables that hold splicing variants with SNP within - size: 29,788
+open(SNPSPL, "SNP splicing joining") or die "Could not open SNP splicing joining";  
+open(OUT, ">SNP splicing joining exon filtered") or die "Could not open SNP splicing joining exon filtered";    # output file
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+
+$line = <SNPSPL>; # get header of input file
+
+$BASE_PAIR_OFFSET = 50; # base pair offset at exon start and end search SNP
+
+# print header of result table
+chop($line);
+print OUT $line."\tSNPInExonNumber\n";
+
+# column variables for each line in SNPSPL table
+$chrom;                     # Reference sequence chromosome or scaffold 
+$chromStart;                    # chrom position start
+$chromEnd;                  # chrom position end
+$strand;                    # + or - for strand
+$geneId;                    # Name of gene (usually transcript_id from GTF)
+$codigSeqStart;             # Coding region start
+$codigSeqEnd;               # Coding region end
+$transcriptStart;           # Transcription start position
+$transcriptEnd;             # Transcription end position
+$SNPlocation;               # SNP location 
+$Allels;                    # observed nucleutide allele
+$SNPId;                     # unique SNP ID
+$alternativeSplicingType;   # type of alternative splicing event
+$numberOfExons;             # Number of exons
+$ExonsStart;                # Exon start positions
+$ExonsEnd;                  # Exon end positions
+
+$line = <SNPSPL>;
+
+while (defined ($line)) # 1. foreach row in table SNPSPL
+{
+    # 1.1. extract exon data of alt splicing variant and SNP location
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray[0]; 
+    $chromStart = $LineArray[1];                    
+    $chromEnd = $LineArray[2];              
+    $strand = $LineArray[3];                    
+    $geneId = $LineArray[4];                    
+    $codigSeqStart = $LineArray[5];             
+    $codigSeqEnd = $LineArray[6];               
+    $transcriptStart = $LineArray[7];           
+    $transcriptEnd = $LineArray[8];             
+    $SNPlocation = $LineArray[9];               
+    $Allels = $LineArray[10];                   
+    $SNPId = $LineArray[11];                        
+    $alternativeSplicingType = $LineArray[12];   
+    $numberOfExons = $LineArray[13];                
+    $ExonsStart = $LineArray[14];               
+    $ExonsEnd = $LineArray[15];
+    chomp($numberOfExons);
+    chomp($SNPlocation);
+    # print LOG "numberOfExons = ".$numberOfExons."\n";
+    
+    @ExonStartArray = split(/,/,$ExonsStart); # splitting the exon start positions
+    @ExonEndArray = split(/,/,$ExonsEnd); # splitting the exon end positions
+    
+    # 1.2. foreach exon start and end location check if SNP is in the first 50 bp or last 50 bp of exon
+    for ($i = 0; $i < $numberOfExons; $i++)
+    {
+        chomp($ExonStartArray[$i]); # chomp current exon's start position
+        chomp($ExonEndArray[$i]); # chomp current exon's end position
+        $ExonStartPos = $ExonStartArray[$i];
+        $ExonEndPos = $ExonEndArray[$i];
+        # print LOG "SNPlocation = ".$SNPlocation."\n";
+        # print LOG "ExonStartPos = ".$ExonStartPos."\n";
+        # print LOG "ExonEndPos = ".$ExonEndPos."\n";
+        
+        # 1.2.1. if SNP is in range of some exon
+        if ((($SNPlocation >= $ExonStartPos) && ($SNPlocation <= ($ExonStartPos + $BASE_PAIR_OFFSET))) ||
+            (($SNPlocation >= ($ExonEndPos - $BASE_PAIR_OFFSET)) && ($SNPlocation <= $ExonEndPos))) 
+            {
+                # 1.2.1.1 print to OUT the variant + exon number that SNP is in the range of
+                print OUT $line."\t".($i+1)."\n";
+            }
+    }
+    
+    $line = <SNPSPL>; # take next line from table
+}
+
+
+close(SNPSPL);
+close(OUT);
+close(LOG);
+
+
+
+#Script #4 appendix D
+
+#this script checks the frequency of each type of alternative splicing in 2 #tables – all genes that alternatively spliced, compard with all genes that #contains synonymous SNP at the start or the end of exon 
+
+#***********************- pseudo code -*************************
+# 1. foreach row in table AltEventsWithType
+#   1.1. take the alternative splicing type and put it in map as a key
+#   1.2. increment the value of the key
+# 2. foreach row in table SNP splicing joining
+#   2.1 take the alternative splicing type and put it in map as a key
+#   2.2. increment the value of the key
+# 3. calculate the frequency of every type of alternative splicing for each map
+# 3. print the maps and the fequencies to OUT in two separeted tables
+#***************************************************************
+
+open(ALTTYPE, "AltEventsWithType") or die "Could not open AltEventsWithType";   # table of alternative splicing events with types - size: 171,883
+open(SNPTYPE, "SNP splicing joining") or die "Could not open ";     # table of alternative splicing events with SNPs and types - size: 29,788
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(OUT, ">AltSplicingTypeFrequency") or die "Could not open AltSplicingTypeFrequency";    # output file
+
+%typesFreq; # map of alternative splicing type (key) and number of apearences of the type in the first table (value)
+
+$line = <ALTTYPE>; # first line contains the description of the table
+$line = <ALTTYPE>; # takes the second line
+
+while (defined ($line)) # foreach row in table ALTTYPE
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $key = $LineArray[11];  # the alternative splicing type     
+    
+    if(defined $typesFreq{$key}) # if this type is already exists in the map
+    {
+        $typesFreq{$key}++; # increment its number of apearances
+    }
+    else
+    {
+        $typesFreq{$key} = 1; # set as new key and set its number of apearences to 1
+    }
+    
+    $line = <ALTTYPE>;
+}
+
+%typesFreqWithSNP; # map of alternative splicing type (key) and number of apearences of the type in the second table (value)
+
+$line = <SNPTYPE>; # first line contains the description of the table
+$line = <SNPTYPE>; # takes the second line
+
+while (defined ($line)) # foreach row in table SNPTYPE
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $key = $LineArray[12]; # the alternative splicing type      
+    
+    if(defined $typesFreqWithSNP{$key}) # if this type is already exists in the map
+    {
+        $typesFreqWithSNP{$key}++; # increment its number of apearances
+    }
+    else
+    {
+        $typesFreqWithSNP{$key} = 1; # set as new key and set its number of apearences to 1
+    }
+    
+    $line = <SNPTYPE>;
+}
+
+@keys = keys(%typesFreq);
+$altFreqSum = 0;
+
+foreach $key(@keys) # sum the total alternative splicing events of the first table
+{       
+    $altFreqSum += $typesFreq{$key};
+}
+
+print OUT "AltEventsWithType Frequency Table:\n";
+print OUT "AltType\tNumberOfApearencesInTable\tTotalFrequency\n";
+
+foreach $key(@keys) # calculate the frequency of every type of alternative splicing in the first table and print the data to OUT
+{
+    $freq = $typesFreq{$key}/$altFreqSum; 
+    
+    print OUT $key . "\t";
+    print OUT $typesFreq{$key} . "\t";
+    print OUT $freq . "\n";
+}
+
+print OUT "\n";
+
+@keys = keys(%typesFreqWithSNP);
+$SNPFreqSum = 0;
+
+foreach $key(@keys) # sum the total alternative splicing events of the second table
+{       
+    $SNPFreqSum += $typesFreqWithSNP{$key};
+}
+
+print OUT "SNP splicing joining Frequency Table:\n";
+print OUT "AltTypeWithSNP\tNumberOfApearencesInTable\tTotalFrequency\n";
+
+foreach $key(@keys) # calculate the frequency of every type of alternative splicing of the second table and print the data to OUT
+{
+    $freq = $typesFreqWithSNP{$key}/$SNPFreqSum;
+    
+    print OUT $key . "\t";
+    print OUT $typesFreqWithSNP{$key} . "\t";
+    print OUT $freq . "\n";
+}
+
+# Script #5 appendix E
+
+#! /usr/bin/perl-w
+
+#this script compute the needed table for a Chi Square test between no snp \snp #and no alternative splicing\alternative splicing
+
+#***********************- pseudo code -*************************
+# 1. get all refseq genes and hold them in HASH
+# 2. get all refseq genes that have AS and hold them in HASH
+# 3. get all refseq genes that have SNP - was computed by auxiliry script "findRefseqWithSNP.pl" - and hold in HASH
+# 4. get all refseq genes that have AS and SNP and hold them in HASH
+# 5. count all refseq genes that have AS and no SNP
+# 6. count all refseq genes that have SNP and no AS
+# 7. count all refseq genes that dont have SNP and dont have AS
+#***************************************************************
+
+
+# openning the required input and output files
+open(AS_GENES, "RefSeq_Alt") or die "RefSeq_Alt";
+open(ALL_GENES, "refseq") or die "refseq";
+open(SNP_GENES, "refseq_genes_with_snp") or die "refseq_genes_with_snp"; # was computed by auxiliry script -findRefseqWithSNP.pl
+open(OUT, ">instances_count_summary") or die "out";
+
+# init data structures
+%refseqGenes = (); # holds all refseq genes
+$refseqGenesCounter = 0; #holds the number of refseq genes
+%refseqGenesWithASAndSNP = (); # holds all refseq genes that have a SNP and AS
+$refseqGenesWithASAndSNPCounter = 0; #holds the number of refseq genes that have a SNP and AS
+%refseqGenesWithAS = (); # holds all refseq genes that have AS 
+$refseqGenesWithASCounter = 0; #holds the number of refseq genes that have AS 
+%refseqGenesWithASAndNoSNP = (); # holds all refseq genes that have AS but no SNP
+$refseqGenesWithASAndNoSNPCounter = 0; #holds the number of refseq genes that have AS but no SNP
+%refseqGenesWithSNP = (); # holds all refseq genes that have SNP 
+$refseqGenesWithSNPCounter = 0; #holds the number of refseq genes that have SNP 
+%refseqGenesWithSNPAndNoAS = (); # holds all refseq genes that have SNP but no AS
+$refseqGenesWithSNPAndNoASCounter = 0; #holds the number of refseq genes that have SNP but no AS
+%refseqGenesWithNoSNPAndNoAS = (); # holds all refseq genes that have no SNP and no AS
+$refseqGenesWithNoSNPAndNoASCounter = 0; #holds the number of refseq genes that have no SNP and no AS
+
+print OUT "***********************- instances count summary -*************************\n\n";
+
+# get all refseq genes 
+$line = <ALL_GENES>;
+$line = <ALL_GENES>;
+while (defined $line)
+{
+    chomp($line);
+
+    @LineArray = split(/\t/,$line);
+    $geneID = $LineArray[1]; # get gene ID
+    if (defined $refseqGenes{$geneID})
+    {
+
+    }
+    else
+    {
+        $refseqGenes{$geneID} = 1;
+        $refseqGenesCounter++;
+    }
+
+    $line = <ALL_GENES>;
+}
+print OUT "All refseq genes - " . $refseqGenesCounter . "\n\n";
+
+# get all refseq genes that have AS
+$line = <AS_GENES>;
+while (defined $line)
+{
+    chomp($line);
+
+    @LineArray = split(/\t/,$line);
+    $geneID = $LineArray[3]; # get gene ID
+    if (defined $refseqGenesWithAS{$geneID})
+    {
+
+    }
+    else
+    {
+        $refseqGenesWithAS{$geneID} = 1;
+        $refseqGenesWithASCounter++;
+    }
+
+    $line = <AS_GENES>;
+}
+
+# get all refseq genes that have SNP - was computed by auxiliry script "findRefseqWithSNP.pl"
+$line = <SNP_GENES>;
+$line = <SNP_GENES>;
+while (defined $line)
+{
+    chomp($line);
+
+    @LineArray = split(/\t/,$line);
+    $geneID = $LineArray[4]; # get gene ID
+    if (defined $refseqGenesWithSNP{$geneID})
+    {
+
+    }
+    else
+    {
+        $refseqGenesWithSNP{$geneID} = 1;
+        $refseqGenesWithSNPCounter++;
+    }
+
+    $line = <SNP_GENES>;
+}
+
+# get all refseq genes that have AS and SNP
+foreach $geneID(%refseqGenes)
+{
+    if ($refseqGenes{$geneID} == 1)
+    {
+        if (defined $refseqGenesWithAS{$geneID}) # has a AS
+        {
+            if (defined $refseqGenesWithSNP{$geneID}) # has a SNP and AS
+            {
+                $refseqGenesWithASAndSNP{$geneID} = 1;
+                $refseqGenesWithASAndSNPCounter++;
+            }
+            else # no SNP 
+            {
+
+            }
+        }
+        else # no AS
+        {
+
+        }
+    }
+}
+print OUT "instances with Alternative splicing and SNP - " . $refseqGenesWithASAndSNPCounter . "\n";
+
+# get all refseq genes that have AS and no SNP
+foreach $geneID(%refseqGenesWithAS)
+{
+    if ($refseqGenesWithAS{$geneID} == 1)
+    {
+        if (defined $refseqGenesWithSNP{$geneID}) # has a SNP
+        {
+
+        }
+        else # no SNP
+        {
+            $refseqGenesWithASAndNoSNP{$geneID} = 1;
+            $refseqGenesWithASAndNoSNPCounter++;
+        }
+    }
+}
+print OUT "instances with Alternative splicing and without SNP - " . $refseqGenesWithASAndNoSNPCounter . "\n";
+
+# get all refseq genes that have SNP and no AS
+foreach $geneID(%refseqGenesWithSNP)
+{
+    if ($refseqGenesWithSNP{$geneID} == 1)
+    {
+        if (defined $refseqGenesWithAS{$geneID}) # has a AS
+        {
+
+        }
+        else # no AS
+        {
+            $refseqGenesWithSNPAndNoAS{$geneID} = 1;
+            $refseqGenesWithSNPAndNoASCounter++;
+        }
+    }
+}
+print OUT "instances without Alternative splicing and with SNP - " . $refseqGenesWithSNPAndNoASCounter . "\n";
+
+# get all refseq genes that dont have SNP and dont have AS
+foreach $geneID(%refseqGenes)
+{
+    if ($refseqGenes{$geneID} == 1)
+    {
+        if (defined $refseqGenesWithAS{$geneID}) # has a AS
+        {
+
+        }
+        else # no AS
+        {
+            if (defined $refseqGenesWithSNP{$geneID}) # has a SNP
+            {
+
+            }
+            else # no SNP and no AS
+            {
+                $refseqGenesWithNoSNPAndNoAS{$geneID} = 1;
+                $refseqGenesWithNoSNPAndNoASCounter++;
+            }
+        }
+    }
+}
+print OUT "instances without Alternative splicing and without  SNP - " . $refseqGenesWithNoSNPAndNoASCounter . "\n";
+
+
+close(SNPAS_GENES);
+close(AS_GENES);
+close(ALL_GENES);
+close(SNP_GENES);
+close(OUT);
+
+
+
+
+
+
+
+
+# Heper Script regarding script #5 appendix F
+
+#! /usr/bin/perl-w
+
+# This script finds all the refseq genes which have a SNP inside them
+
+#***********************- pseudo code -***************************************************************************************
+# 1. foreach row in table refseq table
+#   1.1. extract the chromosome number 
+#   1.2  extract the strand
+#   1.3  extract the transcription start and end
+#   1.4  extract the rest of the relevent data 
+#   1.5 put everything in a hashtable, the key = gene id, value = the rest of the data
+#2. foreach row in table snp135
+#   2.1 extract the relevent data.
+#   2.2 call findSnpInAlternativeSplicingEvent function with the chromosome number, strand,SNP location,SNP Id and allels fields.
+#
+#findSnpInAlternativeSplicingEvent:
+#   1.comper the chromosome number of the alternative splicing event and the snp
+#       1.1 if it mach
+#           1.1.1 comper the strand of the alternative splicing event and the snp.
+#               1.1.1.1 if it mach
+#                   1.1.1.1.1 comper the start and end of the transcription area and the snp locatoin
+#                       1.1.1.1.1.1 if it mach
+#                           1.1.1.1.1.1.1 print to OUT the relevent data
+#******************************************************************************************************************************
+
+open(REFSEQ, "refseq") or die "Could not open RefSeq_Alt";  
+open(SNP135, "snp135") or die "Could not open AltEvents";       # UCSC table of synonymous SNPs size: 38,301
+open(OUT, ">refseq_genes_with_snp") or die "Could not open AltEventsWithType";  # output file
+
+$chrom;         # Reference sequence chromosome or scaffold 
+$codigSeqStart; # coding start position
+$codigSeqEnd;   # coding end position
+$strand;        # + or - for strand
+$transcriptStart;   # Transcription start position
+$transcriptEnd;     # Transcription end position
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$AltEvnetType;  # alternative splicing type
+$numberOfExons;     # Number of exons
+$ExonsStart;            # start positions of exons
+$ExonsEnd;          # end positions of exons
+
+$line = <REFSEQ>; #skip the unrelevent row
+$line = <REFSEQ>; 
+
+while (defined ($line)) # foreach row in table aternative splicing event
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray[2]; 
+    $geneId = $LineArray[1];
+    $strand = $LineArray[3];
+    $transcriptStart = $LineArray[4];
+    $transcriptEnd = $LineArray[5];
+    $codigSeqStart = $LineArray[6];
+    $codigSeqEnd = $LineArray[7];
+    $numberOfExons = $LineArray[8];
+    $ExonsStart = $LineArray[9];
+    $ExonsEnd = $LineArray[10];
+    
+    $AltEventsMap{$geneId} = $chrom."\t".$strand."\t".$codigSeqStart."\t".$codigSeqEnd."\t".$transcriptStart."\t".$transcriptEnd."\t".$geneId."\t".$numberOfExons."\t".$ExonsStart."\t".$ExonsEnd."\t".$AltEvnetType;
+    $line = <REFSEQ>; # take next line from table
+}
+
+$line = <SNP135>;
+$line = <SNP135>;   #skip unrelevent rows
+$line = <SNP135>;
+
+print OUT "chrom strand geneId codigSeqStart codigSeqEnd transcriptStart transcriptEnd SNPlocation Allels SNPId numberOfExons ExonsStart ExonsEnd\n";
+
+while (defined ($line)) # foreach row in table SNP
+{
+    chomp($line);
+    @LineArray2 = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray2[1];
+    $SNPlocation = $LineArray2[2];
+    $SNPId = $LineArray2[4];
+    $strand = $LineArray2[6];
+    $Allels = $LineArray2[9];
+    
+    findSnpInAlternativeSplicingEvent($chrom, $strand, $SNPlocation,$SNPId,$Allels);
+    $line = <SNP135>;
+}
+
+close(OUT);
+
+
+#findAlternativeSplicingTypeByLocation($chrom, $strand, $SNPlocation,$SNPId,$Allels)
+sub findSnpInAlternativeSplicingEvent
+{
+    my $chrom = $_[0];
+    my $strand = $_[1];
+    my $SNPlocation = $_[2];
+    my $SNPId = $_[3];
+    my $Allels = $_[4];
+
+    foreach $geneId(%AltEventsMap)
+    {
+        $geneInfo = $AltEventsMap{$geneId};
+        chomp($geneInfo);
+        @AltArray = split(/\t/,$geneInfo); # splitting the line of every value in a line of the map
+        if($AltArray[0] eq $chrom)
+        {   
+            if($AltArray[1] eq $strand)
+            {   
+                if(($AltArray[2] <= $SNPlocation) && ($AltArray[3] >= $SNPlocation))
+                    {   
+                        print OUT $AltArray[0]."\t".$AltArray[11]."\t".$AltArray[12]."\t".$AltArray[1]."\t".$AltArray[6]."\t".$AltArray[2]."\t".$AltArray[3]."\t".$AltArray[4]."\t".$AltArray[5]."\t".$SNPlocation."\t".$Allels."\t".$SNPId."\t".$AltArray[10]."\t".$AltArray[7]."\t".$AltArray[8]."\t".$AltArray[9]."\n";
+                    }
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+# appendix G
+
+#! /usr/bin/perl-w
+
+#this script compute the needed table for a Chi Square test between end/start of #exon and no alternative splicing\alternative splicing
+
+open(AS, "SNP splicing joining exon filtered") or die "SNP splicing joining exon filtered";     
+open(SNP, "refseq_genes_with_snp") or die "Could not open RefSeq_Alt";
+open(ALT, "RefSeq_Alt") or die "Could not open RefSeq_Alt";
+
+open(OUT,"> test3") or die "could not open test3";
+
+@res;
+for($i = 0; $i < 4; $i++)
+{
+    $res[$i] = 0;
+}
+$line = <AS>;
+$line = <AS>;
+
+while(defined $line)
+{
+    @geneArr = split(/\t/,$line);
+    
+    $SNPlocation = $geneArr[9];
+    $exon = $geneArr[16];
+    $exonsStart = $geneArr[14];
+    $exonsEnd = $geneArr[15];
+    $NumberOfExons = $geneArr[13];
+    
+    @exonsStart = split(/\s/,$exonsStart);
+    @exonsEnd = split(/\s/,$exonsEnd);
+    
+    
+    if( $SNPlocation - $exonsStart[$exon-1] <= 50) # increasing the sum of alternative splising at the begining of the exon
+    {
+        $res[0]++;
+    }
+    elsif($exonsEnd[$exon-1] - $SNPlocation <= 50) # increasing the sum of alternative splising at the end of the exon
+    {
+        $res[2]++;
+    }
+    
+    $line = <AS>;
+
+}
+
+close(AS);
+
+$SNPline = <SNP>;
+$SNPline = <SNP>;
+$ALTline = <ALT>;
+@snpArr = split(/\s/,$SNPline);
+@altArr = split(/\s/,$ALTline);
+$SNPgeneID = $snpArr[4];
+$ALTgeneID = $altArr[3];
+
+
+$flag = 1;
+while(defined $SNPline)
+{
+
+    while( defined $ALTline && $flag != 0)
+    {
+        
+        if($SNPgeneID eq $ALTgeneID)
+        {
+            $flag = 0;
+        }
+        
+        $ALTline = <ALT>;
+        @altArr = split(/\s/,$ALTline);
+        $ALTgeneID = $altArr[3];
+    
+    }
+    close(ALT);
+    open(ALT, "RefSeq_Alt") or die "Could not open RefSeq_Alt";
+    
+    if($flag)
+    {
+        
+        
+        $NumberOfExons = $snpArr[13];
+        
+        $exonsStart =  $snpArr[14];
+        
+        @exonsStart = split(/\s/,$exonsStart);
+        $exonsEnd =  $snpArr[15];
+        @exonsEnd = split(/\s/,$exonsEnd);
+        $SNPlocation = $snpArr[9];
+        
+        
+        for($i = 0; $i < $NumberOfExons; $i++)
+        {
+            
+            if( $SNPlocation - $exonsStart[$i] <= 50 && $SNPlocation <= $exonsEnd[$i])
+            {
+                $res[1]++;#increasing the sum of not alternative splised at the begining of the exon 
+            }
+        }
+        
+        for($i = 0; $i < $NumberOfExons; $i++)
+        {
+            if( $exonsEnd[$i] - $SNPlocation  <= 50 && $exonsEnd[$i] - $SNPlocation >= 0 )
+            {
+                $res[3]++; #increasing the sum of not alternative splised at the end of the exon 
+            }
+        }
+
+    }
+
+    $SNPline = <SNP>;
+    @snpArr = split(/\s/,$SNPline);
+    $SNPgeneID = $snpArr[4];
+    $flag = 1;
+}
+
+print OUT "\t\tAlternative splicing\tno Alternative splicing\n";
+print OUT "Begining\t".$res[0]."\t".$res[1]."\n";
+print OUT "End\t".$res[2]."\t".$res[3]."\n";
+
+
+
+
+
+#script #6 appendix H
+
+#! /usr/bin/perl-w
+
+#***********************- pseudo code -*************************
+# 1. foreach row in table REFSEQ
+# 1.1 foreach row in ALTEV
+# 1.1.1 if an alternative splicing event if found within current gene then they are printed to OUT file
+#***************************************************************
+
+open(ALTEV, "AltEvents") or die "Could not open AltEvents";         # UCSC table of alternative events - size: 91,223
+open(REFSEQ, "refseq") or die "Could not open refseq";          # UCSC table of refseq genes - size: 41,748
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(OUT, ">AltEventsWithTypeNew") or die "Could not open AltEventsWithTypeNew";    # output file
+
+# print header of result table
+print OUT "chrom\trefseqGeneChromStart\trefseqGeneChromEnd\tEmptyPlaceHolder\tEmptyPlaceHolder\tgeneID\trefseqcore\tstrand\trefseqcodingStart\trefseqcodingEnd\ttranscriptScore\tEmptyPlaceHolder\trefseqTranscriptStart\trefseqTranscriptEnd\trefseqExonCount\trefseqExonStarts\trefseqExonEnds\tsecondName\n";
+print OUT "!\taltEventChromStart\taltEventChromEnd\taltEventType\n";
+
+# column variables for each line in REFSEQ table
+$bin;           # Indexing field to speed chromosome range queries.
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$chrom;         # Reference sequence chromosome or scaffold
+$strand;        # + or - for strand
+$txStart;       # Transcription start position
+$txEnd;         # Transcription end position
+$cdsStart;      # Coding region start
+$cdsEnd;        # Coding region end
+$exonCount;     # Number of exons
+$exonStarts;        # Exon start positions
+$exonEnds;      # Exon end positions
+$score;         # score
+$secondName;        # Alternate name (e.g. gene_id from GTF)
+
+$line = <REFSEQ>; # jump over header in top of the table
+$line = <REFSEQ>;
+
+while (defined ($line)) # fill data in %refseqMap Map from REFSEQ table
+{
+    chomp($line);
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $bin = $LineArray[0];   
+    $geneID = $LineArray[1];
+    $chrom = $LineArray[2];
+    $strand = $LineArray[3];
+    $txStart = $LineArray[4];
+    $txEnd = $LineArray[5];
+    $cdsStart = $LineArray[6];
+    $cdsEnd = $LineArray[7];
+    $exonCount = $LineArray[8];
+    $exonStarts = $LineArray[9];
+    $exonEnds = $LineArray[10];
+    $score = $LineArray[11];
+    $secondName = $LineArray[12];
+    chomp($geneID);
+    chomp($chrom);
+    chomp($strand);
+    
+    # call helper function that finds all alternative splicing events in current gene and print to outpur file
+    findAlternativeSplicingTypeByLocation($chrom, $txStart, $txEnd, $strand);
+    
+    $line = <REFSEQ>; # take next line from table
+}
+
+close(ALTEV);
+close(REFSEQ);
+close(LOG);
+close(OUT);
+
+#findAlternativeSplicingTypeByLocation( $chrom, $chromStart, $chromEnd, $strand)
+sub findAlternativeSplicingTypeByLocation
+{
+    seek(ALTEV, 0, SEEK_SET);   # move file cursor to start of file
+    my $i_chrom = $_[0];        # input parameter
+    my $i_chromStart = $_[1];   # input parameter
+    my $i_chromEnd = $_[2];     # input parameter
+    my $i_strand = $_[3];       # input parameter
+    my @i_LineArray;
+
+    # column variables for each line in ALTEV table
+    my $tempChrom;          
+    my $tempChromStart;     
+    my $tempChromEnd;       
+    my $tempStrand;         
+    my $tempAltType;    # type of alternative splicing event - more explantions in attached file 'Alternative Splicing type UCSC'
+    my $firstMatchFound = 1;
+
+    print LOG "\nfindAlternativeSplicingTypeByLocation ( ".$i_chrom." , ".$i_chromStart." , ".$i_chromEnd." , ".$i_strand. " )\n\n";
+    
+    my $i_line = <ALTEV>; # jump over header in top of the table
+    my $i_line = <ALTEV>;
+
+    while (defined ($i_line)) # 1.2. find according to input location parameters the matching alternative splicing events
+    {
+        @i_LineArray = split(/\t/,$i_line); # splitting the line to the columns
+        $tempChrom = $i_LineArray[1];           
+        $tempChromStart = $i_LineArray[2];      
+        $tempChromEnd = $i_LineArray[3];        
+        $tempStrand = $i_LineArray[6];          
+        $tempAltType = $i_LineArray[4];
+        chomp($tempChrom);
+        chomp($tempStrand);
+        
+        if (($i_chrom eq $tempChrom) && ($i_strand eq $tempStrand))
+        {
+            if (($i_chromStart <= $tempChromStart) && ($i_chromEnd >= $tempChromEnd)) # if alternative splicing event whithin gene
+            {
+                if ($firstMatchFound == 1) # print gene information to output file only if match was found
+                {
+                    $firstMatchFound = 0;
+                    # print to OUT the refaeq gene
+                    print OUT $chrom."\t".$txStart."\t".$txEnd."\t"."emptyPlaceHolder"."\t"."emptyPlaceHolder"."\t".$geneID."\t".$score."\t".$strand."\t".$cdsStart."\t".$cdsEnd."\t".$score."\t"."emptyPlaceHolder"."\t".$txStart."\t".$txEnd."\t".$exonCount."\t".$exonStarts."\t".$exonEnds."\t".$secondName."\n";
+                }
+                
+                # print alternative splicing event information
+                print OUT "!\t".$tempChromStart."\t".$tempChromEnd."\t".$tempAltType."\n";
+            }
+        }   
+
+        $i_line = <ALTEV>; # take next line from table
+    }
+}
+
+
+
+
+#script #7 appendix I
+
+#! /usr/bin/perl-w
+
+#***********************- Description -***************************************************
+# This script finds per each gene the SNP's that are contained within it.
+# in addition per each match this script finds the relevant alternative splicing events 
+# by overlapping exon and alterantive splicing event.
+#*****************************************************************************************
+
+open(ALTEV, "AltEventsWithTypeNew") or die "Could not open RefSeq_Alt";     # The output from script 1 size: 171,884
+open(SNP135, "snp135") or die "Could not open AltEvents";       # UCSC table of synonymous SNPs size: 38,301
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(OUT, ">SNP splicing joining new") or die "Could not open AltEventsWithType";   # output file
+
+$chrom;         # Reference sequence chromosome or scaffold 
+$codigSeqStart; # coding start position
+$codigSeqEnd;   # coding end position
+$strand;        # + or - for strand
+$transcriptStart;   # Transcription start position
+$transcriptEnd;     # Transcription end position
+$geneID;        # Name of gene (usually transcript_id from GTF)
+$AltEvnetType;  # alternative splicing type
+$numberOfExons;     # Number of exons
+$ExonsStart;            # start positions of exons
+$ExonsEnd;          # end positions of exons
+
+$line = <ALTEV>; #skip the unrelevent row
+$line = <ALTEV>; 
+
+while (defined ($line)) # foreach row in table aternative splicing event
+{
+    chomp($line);
+    
+    if ($line =~ /^!/) # if current line holds alternative splicing information - add it to hash
+    { # hold alternative splicing data in HASH with geneID as key
+        if (defined $AltEventsInformationMap{$geneId})
+        {
+            $AltEventsInformationMap{$geneId} = $AltEventsInformationMap{$geneId} . $line . "\n";
+        }
+        else
+        {
+            $AltEventsInformationMap{$geneId} = $line . "\n";
+        }
+    }
+    else # if current line holds gene information - call helper function
+    {
+        @LineArray = split(/\t/,$line); # splitting the line to the columns
+        $chrom = $LineArray[0]; 
+        $chromStart = $LineArray[1];
+        $chromEnd = $LineArray[2];
+        $geneId = $LineArray[5];
+        $strand = $LineArray[7];
+        $transcriptStart = $LineArray[12];
+        $transcriptEnd = $LineArray[13];
+        $AltEvnetType = $LineArray[11];
+        $codigSeqStart = $LineArray[8];
+        $codigSeqEnd = $LineArray[9];
+        $numberOfExons = $LineArray[14];
+        $ExonsStart = $LineArray[15];
+        $ExonsEnd = $LineArray[16];
+        
+        # hold gene data in HASH with geneID as key
+        $RefaeqGenesMap{$geneId} = $chrom."\t".$strand."\t".$codigSeqStart."\t".$codigSeqEnd."\t".$transcriptStart."\t".$transcriptEnd."\t".$geneId."\t".$numberOfExons."\t".$ExonsStart."\t".$ExonsEnd."\t".$AltEvnetType."\t".$chromStart."\t".$chromEnd;
+    }
+    
+    $line = <ALTEV>; # take next line from table
+}
+
+$line = <SNP135>;
+$line = <SNP135>;   #skip unrelevent rows
+$line = <SNP135>;
+
+# print output file headers
+print OUT "chrom chromStart chromEnd strand geneId codigSeqStart codigSeqEnd transcriptStart transcriptEnd SNPlocation Allels SNPId alternativeSplicingType numberOfExons ExonsStart ExonsEnd\n";
+print OUT "!\taltEventChromStart\taltEventChromEnd\taltEventType\n";
+
+while (defined ($line)) # foreach row in table SNP
+{
+    chomp($line);
+    @LineArray2 = split(/\t/,$line); # splitting the line to the columns
+    $chrom = $LineArray2[1];
+    $SNPlocation = $LineArray2[2];
+    $SNPId = $LineArray2[4];
+    $strand = $LineArray2[6];
+    $Allels = $LineArray2[9];
+    
+    # call helper function to find the genes that are relevant to current SNP
+    findSnpInAlternativeSplicingEvent($chrom, $strand, $SNPlocation,$SNPId,$Allels);
+
+    $line = <SNP135>;
+}
+
+close(OUT);
+
+
+#findAlternativeSplicingTypeByLocation($chrom, $strand, $SNPlocation,$SNPId,$Allels)
+sub findSnpInAlternativeSplicingEvent
+{
+    my $chrom = $_[0];
+    my $strand = $_[1];
+    my $SNPlocation = $_[2];
+    my $SNPId = $_[3];
+    my $Allels = $_[4];
+
+    foreach $geneId(%RefaeqGenesMap) # foreach gene
+    {
+        $geneInfo = $RefaeqGenesMap{$geneId};
+        chomp($geneInfo);
+        @AltArray = split(/\t/,$geneInfo); # splitting the line of every value in a line of the map
+        if($AltArray[0] eq $chrom)
+        {   
+            if($AltArray[1] eq $strand)
+            {   
+                if(($AltArray[2] <= $SNPlocation) && ($AltArray[3] >= $SNPlocation)) # if snp is within the gene
+                {   
+                    print OUT $AltArray[0]."\t".$AltArray[11]."\t".$AltArray[12]."\t".$AltArray[1]."\t".$AltArray[6]."\t".$AltArray[2]."\t".$AltArray[3]."\t".$AltArray[4]."\t".$AltArray[5]."\t".$SNPlocation."\t".$Allels."\t".$SNPId."\t".$AltArray[10]."\t".$AltArray[7]."\t".$AltArray[8]."\t".$AltArray[9]."\n";
+                    
+                    # find the relevant alterantive splicing events of current gene + SNP match
+                    findGeneAlternativeSplicingEventsRelatedToSNP($geneId, $SNPlocation);
+                }
+            }
+        }
+    }
+}
+
+#findGeneAlternativeSplicingEventsRelatedToSNP($geneId, $SNPlocation)
+sub findGeneAlternativeSplicingEventsRelatedToSNP
+{
+    my $geneID = $_[0];
+    my $SNPlocation = $_[1];
+    
+    my $altEventsInfo = $AltEventsInformationMap{$geneId};
+    my $geneInfo = $RefaeqGenesMap{$geneId};
+    my @geneLineArray = split(/\t/,$geneInfo); # splitting the line to the columns
+    my @altEventsArray = split(/\n/,$altEventsInfo);
+    my $altEventsArraySize = @altEventsArray;
+    
+    my $numberOfExons = $geneLineArray[7];              
+    my $ExonsStart = $geneLineArray[8];             
+    my $ExonsEnd = $geneLineArray[9];
+    
+    my @ExonStartArray = split(/,/,$ExonsStart); # splitting the exon start positions
+    my @ExonEndArray = split(/,/,$ExonsEnd); # splitting the exon end positions
+    
+    # foreach exon start and end location check if SNP is in the first 50 bp or last 50 bp of exon
+    for (my $i = 0; $i < $numberOfExons; $i++)
+    {
+        chomp($ExonStartArray[$i]); # chomp current exon's start position
+        chomp($ExonEndArray[$i]); # chomp current exon's end position
+        my $ExonStartPos = $ExonStartArray[$i];
+        my $ExonEndPos = $ExonEndArray[$i];
+        
+        # if SNP is in range of some exon
+        if (($SNPlocation >= $ExonStartPos) && ($SNPlocation <= $ExonEndPos))
+        {
+            #foreach alternative splicing event - print to output the relevant alternative splicing events of gene and SNP
+            for (my $j = 0; $j < $altEventsArraySize; $j++)
+            {
+                my $altEvent = @altEventsArray[$j];
+                my @altEventArray = split(/\t/,$altEvent);
+                my $altEventChromStart = $altEventArray[1];
+                my $altEventChromEnd = $altEventArray[2];
+                
+                # if snp is related to alternative splicing then print it to output
+                if (($altEventChromStart <= $ExonStartPos) && ($ExonEndPos <= $altEventChromEnd))
+                {
+                    print OUT $altEvent . "\n";
+                }
+                elsif (($altEventChromStart >= $ExonStartPos) && ($ExonEndPos >= $altEventChromEnd))
+                {
+                    print OUT $altEvent . "\n";
+                }
+                elsif (($altEventChromStart >= $ExonStartPos) && ($ExonStartPos <= $altEventChromEnd))
+                {
+                    print OUT $altEvent . "\n";
+                }
+                elsif (($altEventChromStart >= $ExonEndPos) && ($ExonEndPos <= $altEventChromEnd))
+                {
+                    print OUT $altEvent . "\n";
+                }
+                else
+                {
+                    #nothing
+                }
+            }
+        }
+    }
+}
+
+
+
+
+#script #8 appendix J
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*******************************************************
+# This script filters the genes by SNPs that are in the first or last 3 positions in an exon.
+#*********************************************************************************************
+
+# joining of UCSC tables that hold splicing variants with SNP within - size: 29,788
+open(SNPSPL, "SNP splicing joining new") or die "Could not open SNP splicing joining";  
+open(OUT, ">SNP splicing joining exon filtered new") or die "Could not open SNP splicing joining exon filtered";    # output file
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+
+$line = <SNPSPL>; # get header of input file
+
+$BASE_PAIR_OFFSET = 3; # base pair offset at exon start and end search SNP
+
+# print header of result table
+chop($line);
+print OUT $line."\tSNPInExonNumber\tSNPoffsetInExon\tSNPStartOrEndExon\n";
+print OUT "!\taltEventChromStart\taltEventChromEnd\taltEventType\n";
+
+# column variables for each line in SNPSPL table
+$chrom;                     # Reference sequence chromosome or scaffold 
+$chromStart;                    # chrom position start
+$chromEnd;                  # chrom position end
+$strand;                    # + or - for strand
+$geneId;                    # Name of gene (usually transcript_id from GTF)
+$codigSeqStart;             # Coding region start
+$codigSeqEnd;               # Coding region end
+$transcriptStart;           # Transcription start position
+$transcriptEnd;             # Transcription end position
+$SNPlocation;               # SNP location 
+$Allels;                    # observed nucleutide allele
+$SNPId;                     # unique SNP ID
+$alternativeSplicingType;   # type of alternative splicing event
+$numberOfExons;             # Number of exons
+$ExonsStart;                # Exon start positions
+$ExonsEnd;                  # Exon end positions
+
+$line = <SNPSPL>;
+$line = <SNPSPL>;
+$isInFirstLastThreeNuc = 0;
+
+while (defined ($line)) # 1. foreach row in table SNPSPL
+{
+    if( $line =~ /^chr/)
+    {
+        $isInFirstLastThreeNuc = 0;
+        # 1.1. extract exon data of alt splicing variant and SNP location
+        chomp($line);
+        @LineArray = split(/\t/,$line); # splitting the line to the columns
+        $chrom = $LineArray[0]; 
+        $chromStart = $LineArray[1];                    
+        $chromEnd = $LineArray[2];              
+        $strand = $LineArray[3];                    
+        $geneId = $LineArray[4];                    
+        $codigSeqStart = $LineArray[5];             
+        $codigSeqEnd = $LineArray[6];               
+        $transcriptStart = $LineArray[7];           
+        $transcriptEnd = $LineArray[8];             
+        $SNPlocation = $LineArray[9];               
+        $Allels = $LineArray[10];                   
+        $SNPId = $LineArray[11];                        
+        $alternativeSplicingType = $LineArray[12];   
+        $numberOfExons = $LineArray[13];                
+        $ExonsStart = $LineArray[14];               
+        $ExonsEnd = $LineArray[15];
+        chomp($numberOfExons);
+        chomp($SNPlocation);
+        $StartOrEnd;
+        # print LOG "numberOfExons = ".$numberOfExons."\n";
+        
+        @ExonStartArray = split(/,/,$ExonsStart); # splitting the exon start positions
+        @ExonEndArray = split(/,/,$ExonsEnd); # splitting the exon end positions
+        
+        # 1.2. foreach exon start and end location check if SNP is in the first 50 bp or last 50 bp of exon
+        for ($i = 0; $i < $numberOfExons; $i++)
+        {
+            chomp($ExonStartArray[$i]); # chomp current exon's start position
+            chomp($ExonEndArray[$i]); # chomp current exon's end position
+            $ExonStartPos = $ExonStartArray[$i];
+            $ExonEndPos = $ExonEndArray[$i];
+            # print LOG "SNPlocation = ".$SNPlocation."\n";
+            # print LOG "ExonStartPos = ".$ExonStartPos."\n";
+            # print LOG "ExonEndPos = ".$ExonEndPos."\n";
+            
+            # 1.2.1. if SNP is in range of some exon
+            if (($SNPlocation >= $ExonStartPos) && ($SNPlocation <= ($ExonStartPos + $BASE_PAIR_OFFSET)))
+            {
+                    
+                # 1.2.1.1 print to OUT the variant + exon number that SNP is in the range of
+                
+                $isInFirstLastThreeNuc = 1; 
+                $SNPoffset = $SNPlocation - $ExonStartPos;
+                # if the strand is from 3' to 5' or the other way around
+                if( $strand eq "+")
+                {
+                    $SNPoffset = "+".$SNPoffset;
+                    $StartOrEnd = "StartOfExon";
+                }
+                else
+                {
+                    $SNPoffset = "-".$SNPoffset;
+                    $StartOrEnd = "EndOfExon";
+                }
+                print OUT $line."\t".($i+1)."\t".$SNPoffset."\t".$StartOrEnd."\n";
+                    
+            }
+            elsif (($SNPlocation >= ($ExonEndPos - $BASE_PAIR_OFFSET)) && ($SNPlocation <= $ExonEndPos))
+            {
+                $isInFirstLastThreeNuc = 1; 
+                $SNPoffset = $ExonEndPos - $SNPlocation;
+                # if the strand is from 3' to 5' or the other way around
+                if( $strand eq "+")
+                {
+                    $SNPoffset = "-".$SNPoffset;
+                    $StartOrEnd = "EndOfExon";
+                }
+                else
+                {
+                    $SNPoffset = "+".$SNPoffset;
+                    $StartOrEnd = "StartOfExon";
+                }
+                print OUT $line."\t".($i+1)."\t".$SNPoffset."\t".$StartOrEnd."\n";
+            }
+        }
+    }
+    # prints the lines that represent alternative splaicing event if there is a SNP in the first or last 3 Nucleotides
+    else
+    {
+        if($isInFirstLastThreeNuc == 1)
+        {
+            print OUT $line;
+        }
+    }
+    
+    $line = <SNPSPL>; # take next line from table
+    
+}
+
+
+
+close(SNPSPL);
+close(OUT);
+close(LOG);
+
+
+
+#script #9 appendix K
+
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*******************************************************
+#this script compute the first test by creating 132 tables that combains alernative splicing
+#types (6), allel variant (11) and location of the snp ( start or end of exon).
+#*********************************************************************************************
+
+open(IN, "SNP splicing joining exon filtered new") or die "Could not open SNP splicing joining exon filtered new";  
+open(OUT, ">alt_typ_allel_res") or die "Could not openalt_typ_allel_res";   # output file
+open(YES, ">alt_typ_allel_res_yes") or die "Could not openalt_typ_allel_res";   # output file
+
+$line = <IN>;
+$line = <IN>;
+
+$Allels;                    # observed nucleutide allele
+$alternativeSplicingType;   # type of alternative splicing event
+$SNPStartOrEndExon;         # location of the SNP beginning or end of the exon
+$counter = 0;
+
+# construct chi square table with p.v. = 0.05
+%ChiSquareValue = (); # key-d.o.f    value-chi square value
+$ChiSquareValue{1} = 3.84;
+$ChiSquareValue{2} = 5.99;
+$ChiSquareValue{3} = 7.81;
+$ChiSquareValue{4} = 9.49;
+$ChiSquareValue{5} = 11.1;
+$ChiSquareValue{6} = 12.6;
+$ChiSquareValue{7} = 14.1;
+$ChiSquareValue{8} = 15.5;
+$ChiSquareValue{9} = 16.9;
+$ChiSquareValue{10} = 18.3;
+$ChiSquareValue{11} = 19.7;
+$ChiSquareValue{12} = 21;
+$ChiSquareValue{13} = 22.4;
+$ChiSquareValue{14} = 23.7;
+$ChiSquareValue{15} = 25;
+$ChiSquareValue{16} = 26.3;
+$ChiSquareValue{17} = 27.6;
+$ChiSquareValue{18} = 28.9;
+$ChiSquareValue{19} = 30.1;
+$ChiSquareValue{20} = 31.4;
+$ChiSquareValue{21} = 32.7;
+$ChiSquareValue{22} = 33.9;
+$ChiSquareValue{23} = 35.2;
+$ChiSquareValue{24} = 36.4;
+$ChiSquareValue{25} = 37.7;
+$ChiSquareValue{26} = 38.9;
+$ChiSquareValue{27} = 40.1;
+$ChiSquareValue{28} = 41.3;
+$ChiSquareValue{29} = 42.6;
+$ChiSquareValue{30} = 43.8;
+
+@AltTyps;
+$AltTyps[0] = "altFinish";
+$AltTyps[1] = "cassetteExon";
+$AltTyps[2] = "retainedIntron";
+$AltTyps[3] = "bleedingExon";
+$AltTyps[4] = "altThreePrime";
+$AltTyps[5] = "altFivePrime";
+$AltTypsLen = @AltTyps;
+
+@SNPvariations;
+$SNPvariations[0] = "A/T";
+$SNPvariations[1] = "A/G";
+$SNPvariations[2] = "A/C";
+$SNPvariations[3] = "G/T";
+$SNPvariations[4] = "C/G";
+$SNPvariations[5] = "C/T";
+$SNPvariations[6] = "A/G/T";
+$SNPvariations[7] = "A/C/G";
+$SNPvariations[8] = "A/C/T";
+$SNPvariations[9] = "C/G/T";
+$SNPvariations[10] = "A/C/G/T";
+$SNPvariationsLen = @SNPvariations;
+
+
+#saves the value of each cell in the obs chart
+@ObstableArr;
+
+for($k = 0; $k < 4; $k++)
+{
+    $ObstableArr[$k] = 0;
+}
+$NumOfTests = 0;
+
+@BeginningOrEndOfExonArr;
+$BeginningOrEndOfExonArr[0] = "StartOfExon";
+$BeginningOrEndOfExonArr[1] = "EndOfExon";
+
+for($i = 0; $i < $AltTypsLen; $i++)
+{
+    for($j = 0; $j < $SNPvariationsLen; $j++)
+    {
+        
+        $line = <IN>; # get the line of the gene
+        #preforming the twice one for the beginning of the exon and ones for the end
+        for($k = 0; $k < 2; $k++)
+        {
+            $NumOfTests++;
+            while(defined $line)
+            {
+                chomp($line);
+                @LineArray = split(/\t/,$line); # splitting the line to the columns
+                $Allels = $LineArray[10];
+                $SNPStartOrEndOfExon = $LineArray[18];
+                chomp($SNPStartOrEndOfExon);
+                $line = <IN>; # get the line of the splicing variant
+                while($line =~ /^!/)
+                {
+                    @LineAltTypeArray = split(/\t/,$line); # splitting the line to the columns
+                    $alternativeSplicingType = $LineAltTypeArray[3];
+                    chomp($alternativeSplicingType);
+                    if(( $Allels eq $SNPvariations[$j]) && ($alternativeSplicingType eq $AltTyps[$i])&& ($SNPStartOrEndOfExon eq $BeginningOrEndOfExonArr[$k]))
+                    {
+                        #increasing the right cell of the obs table
+                        $ObstableArr[0]++;
+                        $sumOfOBSInstances++;
+                    }
+                    elsif(( $Allels eq $SNPvariations[$j]) && ($alternativeSplicingType ne $AltTyps[$i])&& ($SNPStartOrEndOfExon eq $BeginningOrEndOfExonArr[$k]))
+                    {
+                        #increasing the right cell of the obs table
+                        $ObstableArr[1]++;
+                        $sumOfOBSInstances++;
+                    }
+                    elsif(( $Allels ne $SNPvariations[$j]) && ($alternativeSplicingType eq $AltTyps[$i])&& ($SNPStartOrEndOfExon eq $BeginningOrEndOfExonArr[$k]))
+                    {
+                        #increasing the right cell of the obs table
+                        $ObstableArr[2]++;
+                        $sumOfOBSInstances++;
+                    }
+                    elsif(($SNPStartOrEndOfExon eq $BeginningOrEndOfExonArr[$k]))
+                    {
+                        #( $Allels ne $SNPvariations[$j]) && ($alternativeSplicingType ne $AltTyps[$i])&&
+                        #increasing the right cell of the obs table
+                        $ObstableArr[3]++;
+                        $sumOfOBSInstances++;
+                    }               
+                    $line = <IN>;
+                }
+            }
+            
+            close(IN);
+            open(IN, "SNP splicing joining exon filtered new") or die "Could not open SNP splicing joining exon filtered new";  
+            $line = <IN>;
+            $line = <IN>;
+            if($sumOfOBSInstances != 0)
+            {
+                #printing the OBS table data
+                print OUT "statistic test number\t".$NumOfTests."\t".$AltTyps[$i]."\t".$SNPvariations[$j]."\t".$BeginningOrEndOfExonArr[$k]."\n";
+                print OUT "OBS table\n";
+                print OUT "\t\t".$AltTyps[$i]."\t no ".$AltTyps[$i]."\n";
+                print OUT $SNPvariations[$j]."(".$BeginningOrEndOfExonArr[$k].")\t\t".$ObstableArr[0]."\t\t".$ObstableArr[1]."\n";
+                print OUT "no ".$SNPvariations[$j]."(".$BeginningOrEndOfExonArr[$k].")\t\t".$ObstableArr[2]."\t\t".$ObstableArr[3]."\n\n";
+                
+                # compute the data needed for the exp table 
+                $SumOfRowWithAllel = $ObstableArr[0] + $ObstableArr[1];
+                $SumOfRowWIthOutAllel = $ObstableArr[2] + $ObstableArr[3];
+                $SumOfColWithAS = $ObstableArr[0] + $ObstableArr[2];
+                $SumOfColWithOutAS = $ObstableArr[1] + $ObstableArr[3];
+                
+                $expTable[0] = ($SumOfRowWithAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+                $expTable[1] = ($SumOfRowWithAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+                $expTable[2] = ($SumOfRowWIthOutAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+                $expTable[3] = ($SumOfRowWIthOutAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+                $expTableHasValueLowerThanFive = 0;
+                
+                if(($expTable[0] < 5) || ($expTable[1] < 5) || 
+                    ($expTable[2] < 5) || ($expTable[3] < 5))
+                { # found at least one box in the expTable with value lower than 5 - no correlation
+                    $expTableHasValueLowerThanFive = 1;
+                }
+                #prints out the exp table
+                #print OUT "\n exp table\n";
+                #print OUT "\t\t".$AltTyps[$i]."\t\t no ".$AltTyps[$i]."\n";
+                #print OUT $SNPvariations[$j]."\t\t".$expTable[0]."\t".$expTable[1]."\n";
+                #print OUT "no ".$SNPvariations[$j]."\t".$expTable[2]."\t".$expTable[3]."\n\n ";
+                
+                #compute Chi Square value and print result
+                $ChiSquare = 0;
+                for($h = 0; $h < 4; $h++)
+                {
+                    if($expTable[$h] != 0)
+                    {
+                        $ChiSquare = ((($ObstableArr[$h] - $expTable[$h])*($ObstableArr[$h] - $expTable[$h]))/$expTable[$h]) + $ChiSquare;
+                        
+                        #print OUT $ObstableArr[$h]." - ".$expTable[$h]." * ".$ObstableArr[$h]." - ".$expTable[$h]." / ".$expTable[$h]." + ".$ChiSquare."\n";
+                    }
+                }
+                # the dof is always 1 (all the table are 2X2)
+                $dof = 1;
+                
+                print OUT "X^2 value = " . $ChiSquare . "\n";
+                print OUT "d.o.f = " .$dof."\n";
+                # chaeck if computed p value is lower than 0.05 
+                if ($dof >= 1 && $dof <= 30)
+                {
+                    # 2.2 there is a correlation between SNP allele and distinct mRNA - print result
+                    $passingChiSquareValue = $ChiSquareValue{$dof};
+                    print OUT "P.V = ".$passingChiSquareValue."\n\n";
+                    if ($ChiSquare >= $passingChiSquareValue)
+                    {
+                        $counter++;
+                        #print YES "statistic test number\t".$NumOfTests."\t".$AltTyps[$i]."\t".$SNPvariations[$j]."\t".$BeginningOrEndOfExonArr[$k]."\n";
+                        print YES "OBS table\n";
+                        print YES "\t\t".$AltTyps[$i]."\t\t no ".$AltTyps[$i]."\n";
+                        print YES $SNPvariations[$j]."(".$BeginningOrEndOfExonArr[$k].")\t\t".$ObstableArr[0]."\t\t".$ObstableArr[1]."\n";
+                        print YES "no ".$SNPvariations[$j]."(".$BeginningOrEndOfExonArr[$k].")\t\t".$ObstableArr[2]."\t\t".$ObstableArr[3]."\n\n";
+                        print YES "X^2 value = " . $ChiSquare . "\n";
+                        print YES "d.o.f = " .$dof."\n";
+                        print YES "P.V = ".$passingChiSquareValue."\n\n";
+                        #print YES "\n exp table\n";
+                        #print YES "\t\t".$AltTyps[$i]."\t\t no ".$AltTyps[$i]."\n";
+                        #print YES $SNPvariations[$j]."\t\t".$expTable[0]."\t".$expTable[1]."\n";
+                        #print YES "no ".$SNPvariations[$j]."\t".$expTable[2]."\t".$expTable[3]."\n\n ";
+                        
+                        if($expTableHasValueLowerThanFive == 1)
+                        {
+                            print OUT "Corralation found: No\n";
+                        }
+                        else
+                        {
+                            print OUT "Corralation found: Yes\n";
+                        }
+                    }
+                    else
+                    {
+                        print OUT "Corralation found: No\n";
+                    }
+                }
+                
+                
+                print OUT "\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\n";
+                for($f = 0; $f < 4; $f++)
+                {
+                    $ObstableArr[$f] = 0;
+                }
+                for($f = 0; $f < 4; $f++)
+                {
+                    $expTable[$f] = 0;
+                }
+                $sumOfOBSInstances = 0;
+                $expTableHasValueLowerThanFive = 0;
+            }
+        }
+        
+    }   
+    
+    print OUT "number of yes's".$counter." \n";
+}
+
+
+
+
+
+
+
+
+#script #10 appendix L
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*******************************************************
+# This script finds all the mRNA and EST sequences that match a certain SNP and its containing
+# gene.
+#*********************************************************************************************
+
+# open files
+open(HUMAN_EST, "human_est_UCSC") or die "Could not open HUMAN_EST";
+open(HUMAN_MRNA, "human_mRNA_UCSC") or die "Could not open HUMAN_MRNA";
+open(SNPGENES, "SNP splicing joining exon filtered new") or die "Could not open HUMAN_EST";
+open(OUT, ">human_mrna_est_UCSC_filtered_by_SNP") or die "human_mrna_est_UCSC_filtered_by_SNP";
+
+#print headers
+print OUT "\$NM_000000\t\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\n";
+print OUT "\@SNIP\t\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\n";
+print OUT "chrom\tchromStart\tchromEnd\tstrand\tgeneId\tcodigSeqStart\tcodigSeqEnd\ttranscriptStart\ttranscriptEnd\tSNPlocation\tAllels\tSNPId\talternativeSplicingType\tnumberOfExons\tExonsStart\tExonsEnd\tSNPInExonNumber\tSNPoffsetInExon\tSNPStartOrEndExon\n";
+print OUT "!\taltEventChromStart\taltEventChromEnd\taltEventType\n";
+print OUT "> typeOfSeq\tblockNumber\tOffset\t#bin\tmatches\tmisMatches\trepMatches\tnCount\tqNumInsert\tqBaseInsert\ttNumInsert\ttBaseInsert\tstrand\tqName\tqSize\tqStart\tqEnd\ttName\ttSize\ttStart\ttEnd\tblockCount\tblockSizes\tqStarts\ttStarts\n\n";
+
+
+$line = <SNPGENES>;
+$line = <SNPGENES>;
+$line = <SNPGENES>;
+
+while (defined $line)
+{
+    $altEventLines = "";
+    $matchedSequencesLines = ""; # holds the returned result of all matched sequences
+    @LineArray = split(/\t/,$line); # splitting the line to the columns
+    $geneSNPLine = $line;
+
+    $geneId = $LineArray[4];
+    $SNPchrom = @LineArray[0];
+    $SNPstrand = @LineArray[3];
+    $SNPlocation = @LineArray[9];
+    $SNPID = @LineArray[11];
+
+    # call helper function that finds all the sequences that match gene and SNP
+    $matchedSequencesLines = findSequencesBySNPLocation($SNPchrom, $SNPstrand, $SNPlocation);
+    
+    # concatinate all alternative events
+    $line = <SNPGENES>;
+    while ($line =~ /^!/)
+    {
+        $altEventLines = $altEventLines . $line;
+        $line = <SNPGENES>;
+    }
+    chomp($altEventLines);
+    chomp($matchedSequencesLines);
+    
+    # print results to output file
+    print OUT "\$". $geneId ."\t\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\n";
+    print OUT "\@". $SNPID ."\t\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\@\n";
+    print OUT $geneSNPLine;
+    print OUT $altEventLines . "\n";
+    print OUT $matchedSequencesLines . "\n";
+}
+
+close(HUMAN_EST);
+close(HUMAN_MRNA);
+close(SNPGENES);
+close(OUT);
+
+
+
+
+#findSequencesBySNPLocation($chrom, $strand, $SNPlocation)
+sub findSequencesBySNPLocation()
+{
+    seek(HUMAN_EST, 0, SEEK_SET);   # move file cursor to start of file
+    seek(HUMAN_MRNA, 0, SEEK_SET);  # move file cursor to start of file
+    my $i_chrom = $_[0];
+    my $i_strand = $_[1];
+    my $i_SNPlocation = $_[2];
+    
+    # data structure to hold sequence information
+    my $matchedSequencesResult;
+    my @LineArray;
+    my $chrom;
+    my $strand;
+    my $tStart;
+    my $tEnd;
+    my $numberOfBlocks;
+    my $blocksSize;
+    my @blocksSize;
+    my $blockStart;
+    my @blocksStart;
+    my $qName;
+    
+    my $mRNALine = <HUMAN_MRNA>;
+    $mRNALine = <HUMAN_MRNA>;
+    
+    while (defined $mRNALine) # loop over mRNA sequences
+    {
+        my @LineArray = split(/\t/,$mRNALine); # splitting the line to the columns
+        my $chrom = @LineArray[14];
+        my $strand = @LineArray[9];
+        my $tStart = @LineArray[16]; 
+        my $tEnd = @LineArray[17];
+        my $numberOfBlocks = @LineArray[18];
+        my $blocksSize = @LineArray[19];
+        my @blocksSize = split(/,/,$blocksSize);
+        my $blockStart = @LineArray[21];
+        my @blocksStart = split(/,/,$blockStart);
+        my $qName = @LineArray[10];
+        
+        if( $chrom eq $i_chrom) #checks if the SNP is in the same chromosome as the mRNA
+        {
+            if($strand eq $i_strand) #checks if the SNP is in the same strand as the mRNA
+            {
+                if(($tStart <= $i_SNPlocation) && ($i_SNPlocation <= $tEnd)) #checks if the SNP is in the range of the mRNA
+                {
+                    for(my $i = 0 ; $i < $numberOfBlocks ; $i++) #for each block in the mRNA
+                    {
+                        my $blockEnd = $blocksStart[$i] + $blocksSize[$i];
+                        
+                        if(($blocksStart[$i] <= $i_SNPlocation) && ($blockEnd >= $i_SNPlocation)) # checks if the SNP is in the range of a block of the mRNA
+                        {
+                            my $offsetSnp = $i_SNPlocation - $blocksStart[$i]; # calculates the location of the snp in the mRNA block
+                            my $index = $i + 1; # the block that the SNP is in
+                            $matchedSequencesResult = $matchedSequencesResult . "> mRNA\t".$index."\t".$offsetSnp."\t".$mRNALine;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        
+        $mRNALine = <HUMAN_MRNA>;
+    }
+    
+    my $estLine = <HUMAN_EST>;
+    $estLine = <HUMAN_EST>;
+    
+    while (defined $estLine) # loop over EST sequences
+    {
+        my @LineArray = split(/\t/,$estLine); # splitting the line to the columns
+        my $chrom = @LineArray[14];
+        my $strand = @LineArray[9];
+        my $tStart = @LineArray[16]; 
+        my $tEnd = @LineArray[17];
+        my $numberOfBlocks = @LineArray[18];
+        my $blocksSize = @LineArray[19];
+        my @blocksSize = split(/,/,$blocksSize);
+        my $blockStart = @LineArray[21];
+        my @blocksStart = split(/,/,$blockStart);
+        my $qName = @LineArray[10];
+        
+        if( $chrom eq $i_chrom) #checks if the SNP is in the same chromosome as the EST
+        {
+            if($strand eq $i_strand) #checks if the SNP is in the same strand as the EST
+            {
+                if(($tStart <= $i_SNPlocation) && ($i_SNPlocation <= $tEnd)) #checks if the SNP is in the range of the EST
+                {
+                    for(my $i = 0 ; $i < $numberOfBlocks ; $i++) #for each block in the EST
+                    {
+                        my $blockEnd = $blocksStart[$i] + $blocksSize[$i];
+                        
+                        if(($blocksStart[$i] <= $i_SNPlocation) && ($blockEnd >= $i_SNPlocation)) # checks if the SNP is in the range of a block of the EST
+                        {
+                            my $offsetSnp = $i_SNPlocation - $blocksStart[$i]; # calculates the location of the snp in the EST block
+                            my $index = $i + 1; # the block that the SNP is in
+                            $matchedSequencesResult = $matchedSequencesResult . "> EST\t".$index."\t".$offsetSnp."\t".$estLine;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        
+        $estLine = <HUMAN_EST>;
+    }
+    
+    return $matchedSequencesResult;
+}
+
+
+
+
+#script #11 appendix M
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*************************
+# This script uses the computed block number and SNP offset to extract
+# the SNP allele from the sequence.
+#***************************************************************
+#***********************- pseudo code -*************************
+#1. foreach sequence in the input file (starts with ">")
+#   1.1 mark the sequence ID that needed from the sequences database in hashtables - mrnaIDHash and estIDHash
+#2. extract only marked sequences from databse into hashtables - mrnaHash and estHash
+#3. foreach sequence in the input file (starts with ">")
+#4. extract the snip allele an print it to the output file
+#***************************************************************
+
+# openning the required input and output files
+open(SEQ, "human_mrna_est_UCSC_filtered_by_SNP") or die "Could not open human_mrna_est_UCSC_filtered_by_SNP"; 
+open(EST, "est.fa") or die "Could not open human_ESTs_sequences_UCSC";
+open(MRNA, "mrna.fa") or die "Could not open human_mRNA_sequences_UCSC";
+open(OUT, ">human_mrna_est_UCSC_filtered_by_SNP_with_allele") or die "human_mrna_est_UCSC_filtered_by_SNP_with_allele"; # output file
+open(LOG, ">LOG") or die "Could not open LOG";              # log file of program
+open(TOUT, ">TOUT") or die "Could not open LOG"; 
+
+# get header of input file
+$geneIDHeader = <SEQ>; # get header of input file
+$SNPHeader = <SEQ>; # get header of input file
+$SNPInfoHeader = <SEQ>; # get header of input filed
+$AltTypeHeader = <SEQ>; # get header of input filed
+$seqHeader = <SEQ>; # get header of input file
+
+# set header of output file
+print OUT $geneIDHeader;
+print OUT $SNPHeader;
+print OUT "\%Allel\t\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\n";
+print OUT $SNPInfoHeader;
+print OUT $AltTypeHeader;
+print OUT $seqHeader;
+print OUT "\n";
+
+$line = <SEQ>;
+$line = <SEQ>;
+
+%mrnaIDHash = ();
+%estIDHash = ();
+
+# go over the input file, filter out gene withut alternative splicing events or any sequences
+# and mark the required sequences for extraction from database
+while (defined $line)
+{
+    if($line =~ /^\$/)
+    {
+        if ($sequencesOfGeneCounter > 0 && $altEventsOfGeneCounter > 0)
+        {
+            print TOUT $geneLines;
+        }
+
+        $sequencesOfGeneCounter = 0;
+        $altEventsOfGeneCounter = 0;
+        $geneLines = "";
+    }
+    elsif($line =~ /^!/)
+    {
+        $altEventsOfGeneCounter++;
+    }
+    elsif($line =~ /^>/)
+    {
+        $sequencesOfGeneCounter++;
+        @SeqInfo = split(/\t/,$line);
+        $seqType = substr($SeqInfo[0], 2);
+        $seqName = $SeqInfo[13];
+        chomp($seqName);
+        if($seqType eq "mRNA") # mark this sequence ID for extraction from database
+        {
+            $mrnaIDHash{$seqName} = 1;
+        }
+        elsif($seqType eq "EST")
+        {
+            $estIDHash{$seqName} = 1;
+        }
+    }
+    
+    $geneLines = $geneLines . $line;
+    $line = <SEQ>;
+}
+
+# fill hash table with marked mRNA sequences for extraction
+%mrnaHash = ();
+$line = <MRNA>;
+while (defined $line)
+{
+  if($line =~ /^>/)
+  {
+    $sequenceID = $line;
+    $seq = "";
+    $line = <MRNA>;
+
+    while(defined $line)
+    {
+        if($line =~ /^>/)
+        {
+            @LineArray = split(/ /,$sequenceID);
+            $tempID = $LineArray[0];
+            $tempID = substr($tempID, 1);
+            chomp($tempID);
+
+            if (defined $mrnaIDHash{$tempID}) # if this sequence was marked for extraction
+            {
+               print LOG "mrnaHash:" . $tempID . "\n";
+               $mrnaHash{$tempID} = $seq;
+            }
+            last;
+        }
+        else
+        {
+            chomp($line);
+            $seq = $seq . $line;
+        }
+        
+        $line = <MRNA>;
+    }
+  }
+}
+%mrnaIDHash = ();
+
+# fill hash table with marked EST sequences for extraction
+%estHash = ();
+$line = <EST>;
+while (defined $line)
+{
+  if($line =~ /^>/)
+  {
+    $sequenceID = $line;
+    $seq = "";
+    $line = <EST>;
+
+    while(defined $line)
+    {
+        if($line =~ /^>/)
+        {
+            @LineArray = split(/ /,$sequenceID);
+            $tempID = $LineArray[0];
+            $tempID = substr($tempID, 1);
+            
+            chomp($tempID);
+
+            if (defined $estIDHash{$tempID}) # if this sequence was marked for extraction
+            {
+               print LOG "estHash:" . $tempID . "\n";
+               $estHash{$tempID} = $seq;
+            }
+            last;
+        }
+        else
+        {
+            chomp($line);
+            $seq = $seq . $line;
+        }
+        
+        $line = <EST>;
+    }
+  }
+}
+%estIDHash = ();
+
+close(TOUT);
+open(TOUT, "TOUT") or die "Could not open TOUT"; 
+
+$line = <TOUT>;
+
+while (defined $line)
+{
+    chomp($line);
+    print OUT $line."\n";
+    
+    if($line =~ /^>/) # foreach sequence - extract the smip allele from the sequence
+    {
+        @SeqInfo = split(/\t/,$line);
+        $seqType = substr($SeqInfo[0], 2);
+        $seqName = $SeqInfo[13];
+        chomp($seqName);
+        $blockNumber = $SeqInfo[1];
+        $offset = $SeqInfo[2];
+        $allBlocks = $SeqInfo[23];
+        @BlockArray = split(/,/,$allBlocks);
+        $SNPBlock = $BlockArray[$blockNumber-1];
+        $snipIndex = $SNPBlock + $offset - 1;
+        $strand = $SeqInfo[12];
+        
+        if($seqType eq "mRNA")
+        {
+            if (defined $mrnaHash{$seqName}) 
+            {
+                $seq = $mrnaHash{$seqName}; # get sequence from hash
+                
+                if($strand eq "-") # if needed reverse the sequence to get opposite strand
+                {
+                    $reversed = reverse $seq;
+                    $seq = $reversed;
+                }
+                
+                $snip = substr($seq, $snipIndex+1, 1); # extract snip allele
+                print OUT "\%" . $snip . "\t\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\n";
+            }
+        }
+        elsif($seqType eq "EST")
+        {
+                print LOG "if defined: " . $seqName . "\n";
+            if (defined $estHash{$seqName}) 
+            {
+                $seq = $estHash{$seqName}; # get sequence from hash
+                
+                if($strand eq "-") # if needed reverse the sequence to get opposite strand
+                {
+                    $reversed = reverse $seq;
+                    $seq = $reversed;
+                }
+                
+                $snip = substr($seq, $snipIndex+1, 1); # extract snip allele
+                print OUT "\%" . $snip . "\t\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\%\n";
+            }
+        }
+    }
+    
+    $line = <TOUT>;
+}
+
+close(SEQ);
+close(EST);
+close(MRNA);
+close(OUT);
+close(LOG);
+close(TOUT);
+
+
+
+
+
+#script #12 appendix N
+#! /usr/bin/perl-w
+
+#****************- Description -***********************************************
+# This script finds per each sequence the relevant alternative splicing events
+# that were found at the sequence.
+# sequences with no type of alternative splicing are not printed out to the output 
+# file.
+#******************************************************************************
+
+open(IN, "human_mrna_est_UCSC_filtered_by_SNP_with_allele") or die "human_mrna_est_UCSC_filtered_by_SNP_with_allele";   # output file
+open(OUT, ">human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type") or die "human_mrna_est_UCSC_filtered_by_SNP_with_allele";  # output file
+
+# get header of input file
+$geneIDHeader = <IN>; # get header of input file
+$SNPHeader = <IN>; # get header of input file
+$SNPAlleleHeader = <IN>; # get header of input filed
+$SNPInfoHeader = <IN>; # get header of input filed
+$AltTypeHeader = <IN>; # get header of input filed
+$seqHeader = <IN>; # get header of input file
+
+# set header of output file
+print OUT $geneIDHeader;
+print OUT $SNPHeader;
+print OUT $SNPInfoHeader;
+print OUT $AltTypeHeader;
+print OUT $seqHeader;
+print OUT $SNPAlleleHeader;
+print OUT "\#\taltEventChromStart\taltEventChromEnd\taltEventType\n";
+print OUT "\n";
+
+$line = <IN>;
+$line = <IN>;
+
+$currGeneLine;
+
+# go over the input file
+while (defined $line)
+{
+
+    if($line =~ /^\$/) # new gene block of data
+    {
+        $currAltEventsCounter = 0; # clear currrent alternative splicing events counter
+        @currAltEventsArray = (); # clear currrent alternative splicing events array
+        
+        print OUT $line;
+    }
+    elsif($line =~ /^\@/) #line of gene information
+    {
+        print OUT $line;
+    }
+    elsif($line =~ /^chr/) #line of gene information
+    {
+        $currGeneLine = $line;
+        
+        print OUT $line;
+    }
+    elsif($line =~ /^!/) #line of gene information
+    {   
+        # insert new alternative splicing event into array
+        $currAltEventsArray[$currAltEventsCounter] = $line; 
+        $currAltEventsCounter++;
+        
+        print OUT $line;
+    }
+    elsif($line =~ /^>/) #line of gene information
+    {
+        $currSeqLine = $line; # get sequence line
+        $line = <IN>; # get sequence SNP allele
+        $currAlleleLine = $line; 
+
+        $matchedAltEventForSeq = ""; # init string holding all matched alternative splicing events of sequence
+        
+        # foreach of current genes alternative splicing events
+        for ($i = 0; $i < $currAltEventsCounter; $i++)
+        {   
+            $tempAltEventLine = $currAltEventsArray[$i]; # copy current alternative splicing event
+            
+            # call helper function to check if alternative splicing event is present in current sequence
+            $bool = iSAltEventPresentInSequence($currSeqLine, $tempAltEventLine, $currGeneLine);
+            
+            if ($bool == 1) # if alternative splicing event is present in current sequence
+            { # concatinate all the relevant results
+                $matchedAltEventForSeq = $matchedAltEventForSeq . "#\t" . $tempAltEventLine;
+            }
+        }
+        
+        if ($matchedAltEventForSeq ne "") # print out all the alternatove splicing events matched to current sequence
+        {
+            print OUT $currSeqLine;
+            print OUT $currAlleleLine;
+            print OUT $matchedAltEventForSeq;
+        }
+    }
+
+
+    $line = <IN>;
+}
+
+
+close(IN);
+close(OUT);
+
+
+
+#iSAltEventPresentInSequence($sequenceLine, $altEventLine, $geneLine)
+sub iSAltEventPresentInSequence()
+{
+    my $i_sequenceLine = $_[0];
+    my $i_altEventLine = $_[1];
+    my $i_geneLine = $_[2];
+    
+    # split input lines to arrays
+    my @seqLineArray = split(/\t/,$i_sequenceLine);
+    my @altEventLineArray = split(/\t/,$i_altEventLine);
+    my @geneLineArray = split(/\t/,$i_geneLine);
+
+    my $altEventType = $altEventLineArray[3];
+    chomp($altEventType);
+    #chomp($altEventType); # temp workaround - when running in windows
+    chop($altEventType); # temp workaround - when running in linux
+    
+    if ($altEventType eq "altFinish")
+    {
+        # check if alt finish event is present in sequence.
+        # the chromEnd of alternative event represents the end of transcript 
+        # check if the transcript end position matches the chromEnd of alternative splicing event
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        chomp($altEventChromEnd);
+        chomp($seqTranscriptEnd);
+        
+        if ($seqTranscriptEnd eq $altEventChromEnd)
+        {
+            return 1; # alt finish found - return true
+        }
+    }
+    elsif ($altEventType eq "cassetteExon")
+    {
+        # check if sequence has a matching exon to the alternative splicing event positions
+        # the chromStart of altEvent represent exon start position
+        # the chromEnd of altEvent represents exon end position
+        
+        # extract relevant data
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptStart = $seqLineArray[19];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        my $numberOfBlocks = $seqLineArray[21];
+        my $blockSizesLine = $seqLineArray[22];
+        my $transStartsLine = $seqLineArray[24];
+        my @blocksSizesArray = split(/,/,$blockSizesLine);
+        my @blocksStartArray = split(/,/,$transStartsLine);
+        chomp($altEventChromStart);
+        chomp($altEventChromEnd);
+        
+        # if alternative splicing event is within the sequence transcription positions
+        if(($seqTranscriptStart <= $altEventChromStart) && ($altEventChromEnd <= $seqTranscriptEnd))
+        {
+            # go over all sequence blocks - if the relevant exon doesnt exist in 
+            # transcript then cassetteExon event found
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if alternative splicing event matches the current block - cassette exon wasnt found in sequence
+                if(($blocksStartArray[$j] <= $altEventChromStart) && ($altEventChromEnd <= $blockEndPosition))
+                {
+                    return 0; # cassette exon wasnt found - return false
+                }
+                elsif(($altEventChromStart <= $blocksStartArray[$j]) && ($blockEndPosition <= $altEventChromEnd))
+                {
+                    return 0; # cassette exon wasnt found - return false
+                }
+            }
+        }
+        
+        # after looping over sequence blocks, the matching block to the cassette exon was not found - return true
+        return 1; 
+    }
+    elsif ($altEventType eq "retainedIntron")
+    {
+        # check if in the sequence there is a block which matches the positions of intron start and end
+        # the chromStart of altEvent represent intron start position
+        # the chromEnd of altEvent represents intron end position
+        
+        # extract relevant data
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptStart = $seqLineArray[19];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        my $numberOfBlocks = $seqLineArray[21];
+        my $blockSizesLine = $seqLineArray[22];
+        my $transStartsLine = $seqLineArray[24];
+        my @blocksSizesArray = split(/,/,$blockSizesLine);
+        my @blocksStartArray = split(/,/,$transStartsLine);
+        chomp($altEventChromStart);
+        chomp($altEventChromEnd);
+        
+        # if alternative splicing event is within the sequence transcription positions
+        if(($seqTranscriptStart <= $altEventChromStart) && ($altEventChromEnd <= $seqTranscriptEnd))
+        {
+            # go over all sequence blocks - if the relevant intron is found in 
+            # a block then retained intron event is found
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if alternative splicing event matches the current block - retained intron was found in sequence
+                if(($blocksStartArray[$j] <= $altEventChromStart) && ($altEventChromEnd <= $blockEndPosition))
+                {
+                    return 1; # retained intron was found - return true
+                }
+                elsif(($altEventChromStart <= $blocksStartArray[$j]) && ($blockEndPosition <= $altEventChromEnd))
+                {
+                    return 1; # retained intron was found - return true
+                }
+            }
+        }
+    }
+    elsif ($altEventType eq "bleedingExon")
+    {
+        # check if initail or terminal exon overlap an intron of the exact positions as given by the
+        # chromStart chromEnd positions of the alternative splicing event.
+        # chromStart represent the start position of additional intronic sequence to the exon.
+        # chromEnd represent the end position of additional intronic sequence to the exon.
+        
+        # extract relevant data
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptStart = $seqLineArray[19];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        my $numberOfBlocks = $seqLineArray[21];
+        my $blockSizesLine = $seqLineArray[22];
+        my $transStartsLine = $seqLineArray[24];
+        my @blocksSizesArray = split(/,/,$blockSizesLine);
+        my @blocksStartArray = split(/,/,$transStartsLine);
+        chomp($altEventChromStart);
+        chomp($altEventChromEnd);
+        
+        # if alternative splicing event is within the sequence transcription positions
+        if(($seqTranscriptStart <= $altEventChromStart) && ($altEventChromStart <= $seqTranscriptEnd))
+        {
+            my $firstBlockIndex = 0;
+            my $lastBlockIndex = $numberOfBlocks - 1;
+            # compute block end positions
+            my $firstBlockEndPosition = $blocksStartArray[$firstBlockIndex] + $blocksSizesArray[$firstBlockIndex];
+            my $lastBlockEndPosition = $blocksStartArray[$lastBlockIndex] + $blocksSizesArray[$lastBlockIndex];
+            
+            # if alternative splicing event matches the initail or terminal exon - bleedingExon was found
+            if(($blocksStartArray[$firstBlockIndex] <= $altEventChromStart) && ($altEventChromEnd <= $firstBlockEndPosition))
+            {
+                return 1; # bleedingExon was found - return true
+            }
+            elsif(($blocksStartArray[$lastBlockIndex] <= $altEventChromStart) && ($altEventChromEnd <= $lastBlockEndPosition))
+            {
+                return 1; # bleedingExon was found - return true
+            }
+        }
+    }
+    elsif ($altEventType eq "altThreePrime")
+    {
+        # check if in a sequence there is an intron with alternative 3' position. 
+        # this affects the 5' position of the adjacent exon.
+        # the chromStart/chromEnd positions of alt Event represent the 5' positions of adjacent exon.
+        
+        # extract relevant data
+        my $currStrand = $geneLineArray[3];
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptStart = $seqLineArray[19];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        my $numberOfBlocks = $seqLineArray[21];
+        my $blockSizesLine = $seqLineArray[22];
+        my $transStartsLine = $seqLineArray[24];
+        my @blocksSizesArray = split(/,/,$blockSizesLine);
+        my @blocksStartArray = split(/,/,$transStartsLine);
+        my $numberOfExons = $geneLineArray[13];
+        my $exonStartLine = $geneLineArray[14];
+        my $exonEndLine = $geneLineArray[15];
+        my @exonStartsArray = split(/,/,$exonStartLine);
+        my @exonEndsArray = split(/,/,$exonEndLine);
+        my $altEventExonStart;
+        my $altEventExonEnd;
+        chomp($altEventChromStart);
+        chomp($altEventChromEnd);
+        
+        # loop over all gene exons and find the matching gene exon
+        for (my $j = 0; $j < $numberOfExons; $j++)
+        {
+            if (($exonStartsArray[$j] <= $altEventChromStart) && ($altEventChromEnd <= $exonEndsArray[$j]))
+            { # found the exon in which the alternative splicing event happens
+                  $altEventExonStart = $exonStartsArray[$j];
+                  $altEventExonEnd = $exonEndsArray[$j];
+            }
+        }
+        
+        if ($currStrand eq "+")
+        {
+            # go over all sequence blocks 
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if the block is smaller then exon due to altThreePrime event in adjacent intron
+                if (($blocksStartArray[$j] eq $altEventChromEnd) && ($blockEndPosition eq $altEventExonEnd))
+                {
+                    return 1;# altThreePrime was found - return true
+                }
+            }
+        }
+        elsif ($currStrand eq "-")
+        {
+            # go over all sequence blocks 
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if the block is smaller then exon due to altThreePrime event in adjacent intron
+                if (($blocksStartArray[$j] eq $altEventExonStart) && ($blockEndPosition eq $altEventChromStart))
+                {
+                    return 1;# altThreePrime was found - return true
+                }
+            }
+        }
+        
+    }
+    elsif ($altEventType eq "altFivePrime")
+    {
+        # check if in a sequence there is an intron with alternative 5' position. 
+        # this affects the 3' position of the adjacent exon.
+        # the chromStart/chromEnd positions of alt Event represents the 3' positions of adjacent exon.
+        
+        # extract relevant data
+        my $currStrand = $geneLineArray[3];
+        my $altEventChromStart = $altEventLineArray[1];
+        my $altEventChromEnd = $altEventLineArray[2];
+        my $seqTranscriptStart = $seqLineArray[19];
+        my $seqTranscriptEnd = $seqLineArray[20];
+        my $numberOfBlocks = $seqLineArray[21];
+        my $blockSizesLine = $seqLineArray[22];
+        my $transStartsLine = $seqLineArray[24];
+        my @blocksSizesArray = split(/,/,$blockSizesLine);
+        my @blocksStartArray = split(/,/,$transStartsLine);
+        my $numberOfExons = $geneLineArray[13];
+        my $exonStartLine = $geneLineArray[14];
+        my $exonEndLine = $geneLineArray[15];
+        my @exonStartsArray = split(/,/,$exonStartLine);
+        my @exonEndsArray = split(/,/,$exonEndLine);
+        my $altEventExonStart;
+        my $altEventExonEnd;
+        chomp($altEventChromStart);
+        chomp($altEventChromEnd);
+        
+        # loop over all gene exons and find the matching gene exon
+        for (my $j = 0; $j < $numberOfExons; $j++)
+        {
+            if (($exonStartsArray[$j] <= $altEventChromStart) && ($altEventChromEnd <= $exonEndsArray[$j]))
+            { # found the exon in which the alternative splicing event happens
+                  $altEventExonStart = $exonStartsArray[$j];
+                  $altEventExonEnd = $exonEndsArray[$j];
+            }
+        }
+        
+        if ($currStrand eq "+")
+        {
+            # go over all sequence blocks 
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if the block is smaller then exon due to altThreePrime event in adjacent intron
+                if (($blocksStartArray[$j] eq $altEventExonStart) && ($blockEndPosition eq $altEventChromStart))
+                {
+                    return 1;# altFivePrime was found - return true
+                }
+            }
+        }
+        elsif ($currStrand eq "-")
+        {
+            # go over all sequence blocks 
+            for (my $j = 0; $j < $numberOfBlocks; $j++)
+            {
+                # compute block end position
+                my $blockEndPosition = $blocksStartArray[$j] + $blocksSizesArray[$j];
+                
+                # if the block is smaller then exon due to altFivePrime event in adjacent intron
+                if (($blocksStartArray[$j] eq $altEventChromEnd) && ($blockEndPosition eq $altEventExonEnd))
+                {
+                    return 1;# altFivePrime was found - return true
+                }
+            }
+        }
+    }
+    
+    return 0; # return false
+}
+
+
+
+
+#script #13 appendix O
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*******************************************************
+#this script compute the second test by creating 11 tables (that had the most distinct results)  
+#and checks the corralation between alernative splicing type and a specific allel. 
+#*********************************************************************************************
+
+open(IN, "human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type") or die "Could not open human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type";  # UCSC table of alternative events - size: 91,223
+open(OUT, ">statTest4") or die "Could not open statTest4";  # output file
+
+
+@TableArr;
+$counter = 1;
+
+# construct chi square table with p.v. = 0.05
+%ChiSquareValue = (); # key-d.o.f    value-chi square value
+$ChiSquareValue{1} = 3.84;
+$ChiSquareValue{2} = 5.99;
+$ChiSquareValue{3} = 7.81;
+$ChiSquareValue{4} = 9.49;
+$ChiSquareValue{5} = 11.1;
+$ChiSquareValue{6} = 12.6;
+$ChiSquareValue{7} = 14.1;
+$ChiSquareValue{8} = 15.5;
+$ChiSquareValue{9} = 16.9;
+$ChiSquareValue{10} = 18.3;
+$ChiSquareValue{11} = 19.7;
+$ChiSquareValue{12} = 21;
+$ChiSquareValue{13} = 22.4;
+$ChiSquareValue{14} = 23.7;
+$ChiSquareValue{15} = 25;
+$ChiSquareValue{16} = 26.3;
+$ChiSquareValue{17} = 27.6;
+$ChiSquareValue{18} = 28.9;
+$ChiSquareValue{19} = 30.1;
+$ChiSquareValue{20} = 31.4;
+$ChiSquareValue{21} = 32.7;
+$ChiSquareValue{22} = 33.9;
+$ChiSquareValue{23} = 35.2;
+$ChiSquareValue{24} = 36.4;
+$ChiSquareValue{25} = 37.7;
+$ChiSquareValue{26} = 38.9;
+$ChiSquareValue{27} = 40.1;
+$ChiSquareValue{28} = 41.3;
+$ChiSquareValue{29} = 42.6;
+$ChiSquareValue{30} = 43.8;
+
+
+# an arr that contains the tables that we will preforme the second statistic test on
+
+$TableArr[0] = "cassetteExon\ta!g\tEndOfExon";
+$TableArr[1] = "cassetteExon\ta!c\tEndOfExon";
+$TableArr[2] = "cassetteExon\tc!t\tEndOfExon";
+$TableArr[3] = "retainedIntron\ta!g\tEndOfExon";
+$TableArr[4] = "altFinish\ta!c!g\tEndOfExon";
+$TableArr[5] = "retainedIntron\tc!t\tEndOfExon";
+$TableArr[6] = "bleedingExon\ta!g\tEndOfExon";
+$TableArr[7] = "bleedingExon\tc!t\tEndOfExon";
+$TableArr[8] = "altThreePrime\tc!t\tEndOfExon";
+$TableArr[9] = "cassetteExon\tg!t\tStartOfExon";
+$TableArr[10] = "altFinish\ta!c\tEndOfExon";
+
+$TableArrLen = @TableArr;
+
+for($i = 0; $i < 9; $i++)
+{
+    $line = <IN>;
+}
+
+@resTable;
+
+
+for($i = 0; $i < $TableArrLen; $i++) #a loop that pases on the wanted tabel that are contained in tha arr TableArr above
+{
+    $sumOfOBSInstances = 0; # a counter for all the items that are in the needed table
+    for($t = 0; $t < 6; $t++) # reset the result table for each table that we are performing the test
+    {
+        $resTable[$t] = 0;
+    }
+    while(defined $line) 
+    {
+        if($line =~ /^chr/)
+        {
+            @GeneArray = split(/\t/,$line); # splitting the line to the columns
+            $StartOrEndOfExon = $GeneArray[18];
+            chomp($StartOrEndOfExon);
+            $line = <IN>;
+            while( $line =~ /^!/)
+            {
+                $line = <IN>;
+            }
+        }
+        while( $line =~ /^>/)   #if the line represents a sequence (mRNA or EST)
+        {
+            $line = <IN>;
+            $allel = substr($line,1,1);
+            $line = <IN>;
+            $NumberOfAltTypesPerSeq = 0;
+            while( $line =~ /^#/) #taking all the alternative splicing types of a certain sequence
+            {   
+                @LineArray = split(/\t/,$line); # splitting the line to the columns
+                $altType = $LineArray[4];
+                chomp($altType);
+                $AltTypeArr[$NumberOfAltTypesPerSeq] = $altType; # an arr that contains all the alternative splicing types
+                $NumberOfAltTypesPerSeq++;
+                $line = <IN>;
+            }
+            
+            #taking the data of the current test from the table arr above
+            
+            @TableArrData = split(/\t/,$TableArr[$i]);      
+            $altTypeFromTableArr = $TableArrData[0];
+            $allels = $TableArrData[1];
+            @allelsArrFromTableArr = split(/!/,$allels);
+            $numberOfAllelsInArr = @allelsArrFromTableArr;
+            $StartOrEndOfExonFromTableArr = $TableArrData[2];
+            
+            if( $StartOrEndOfExon eq $StartOrEndOfExonFromTableArr)
+            {
+                for($j = 0; $j < $numberOfAllelsInArr; $j++)
+                {
+                    for($b = 0; $b < $NumberOfAltTypesPerSeq; $b++) #checking if ther is a match for each type of splicing in the mRNA/EST
+                    {
+                        if($allel eq $allelsArrFromTableArr[$j])
+                        {
+                            $sumOfOBSInstances++;
+                            if( $AltTypeArr[$b] eq $altTypeFromTableArr)
+                            {   
+                                #calculating the index in the obs table
+                                $TableIndex = ($j * 2); 
+                                #increasing the right cell of the obs table
+                                $resTable[$TableIndex]++;
+                            }
+                            else
+                            {
+                                #calculating the index in the obs table
+                                $TableIndex = ($j * 2) + 1; 
+                                #increasing the right cell of the obs table
+                                $resTable[$TableIndex]++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        $line = <IN>;
+    }
+    
+    print OUT "table number ".$counter." ";
+    $counter++;
+    print OUT $altTypeFromTableArr." ";
+    
+    #compute the exp table
+    
+    for( $c = 0; $c < $numberOfAllelsInArr; $c++)
+    {
+        print OUT $allelsArrFromTableArr[$c]." ";
+    }
+    print OUT $StartOrEndOfExonFromTableArr."\n\n";
+    $expTableHasValueLowerThanFive = 0;
+    if($numberOfAllelsInArr == 2)
+    {
+        $SumOfRowWithFirstAllel = $resTable[0] + $resTable[1];
+        $SumOfRowWIthSecondAllel = $resTable[2] + $resTable[3];
+        $SumOfColWithAS = $resTable[0] + $resTable[2];
+        $SumOfColWithOutAS = $resTable[1] + $resTable[3];
+    }
+    else
+    {
+        $SumOfRowWithFirstAllel = $resTable[0] + $resTable[1];
+        $SumOfRowWIthSecondAllel = $resTable[2] + $resTable[3];
+        $SumOfRowWIthThridAllel = $resTable[4] + $resTable[5];
+        $SumOfColWithAS = $resTable[0] + $resTable[2] + $resTable[4];
+        $SumOfColWithOutAS = $resTable[1] + $resTable[3] + $resTable[5];
+    }
+    if($numberOfAllelsInArr == 2)
+    {
+        $expTable[0] = ($SumOfRowWithFirstAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+        $expTable[1] = ($SumOfRowWithFirstAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+        $expTable[2] = ($SumOfRowWIthSecondAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+        $expTable[3] = ($SumOfRowWIthSecondAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+        
+        if(($expTable[0] < 5) || ($expTable[1] < 5) || 
+            ($expTable[2] < 5) || ($expTable[3] < 5))
+        { # found at least one box in the expTable with value lower than 5 - no correlation
+            $expTableHasValueLowerThanFive = 1;
+        }
+    }
+    else
+    {
+        $expTable[0] = ($SumOfRowWithFirstAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+        $expTable[1] = ($SumOfRowWithFirstAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+        $expTable[2] = ($SumOfRowWIthSecondAllel * $SumOfColWithAS)/$sumOfOBSInstances;
+        $expTable[3] = ($SumOfRowWIthSecondAllel * $SumOfColWithOutAS)/$sumOfOBSInstances;
+        $expTable[4] = ($SumOfRowWIthThridAllel * $SumOfColWithAS) /$sumOfOBSInstances;
+        $expTable[5] = ($SumOfRowWIthThridAllel * $SumOfColWithOutAS) /$sumOfOBSInstances;
+        
+        if(($expTable[0] < 5) || ($expTable[1] < 5) || 
+            ($expTable[2] < 5) || ($expTable[3] < 5) ||
+            ($expTable[4] < 5) || ($expTable[5] < 5))
+        { # found at least one box in the expTable with value lower than 5 - no correlation
+            $expTableHasValueLowerThanFive = 1;
+        }
+    }   
+    
+    #compute Chi Square value and print result
+    $ChiSquare = 0;
+    if($numberOfAllelsInArr == 2)
+    {
+        for($h = 0; $h < 4; $h++)
+        {
+            if($expTable[$h] != 0)
+            {
+                $ChiSquare = ((($resTable[$h] - $expTable[$h])*($resTable[$h] - $expTable[$h]))/$expTable[$h]) + $ChiSquare;
+            }
+        }
+    }
+    else
+    {
+        for($h = 0; $h < 6; $h++)
+        {
+            if($expTable[$h] != 0)
+            {
+                $ChiSquare = ((($resTable[$h] - $expTable[$h])*($resTable[$h] - $expTable[$h]))/$expTable[$h]) + $ChiSquare;
+            }
+        }
+    }
+    
+    #compute the dof
+    
+    $dof = $numberOfAllelsInArr - 1;
+    
+    #printing to the output file 
+
+    print OUT "OBS table\n";
+    print OUT "\t".$altTypeFromTableArr."\tno ".$altTypeFromTableArr."\n";
+    $z = 0;
+    for($h = 0; $h < $numberOfAllelsInArr; $h++)
+    {
+        print OUT $allelsArrFromTableArr[$h]."\t\t".$resTable[$z]."\t\t".$resTable[$z+1]."\n";
+        $z++;   
+        $z++;   
+    }
+
+    
+    #print OUT "EXP table\n";
+    #print OUT "\t".$altTypeFromTableArr."\tno ".$altTypeFromTableArr."\n";
+    #$z = 0;
+    #for($h = 0; $h < $numberOfAllelsInArr; $h++)
+    #{
+    #   print OUT $allelsArrFromTableArr[$h]."\t\t".$expTable[$z]."\t\t".$expTable[$z+1]."\n";
+    #   $z++;   
+    #   $z++;   
+    #} 
+    
+    print OUT "\n";
+    print OUT "X^2 value = " . $ChiSquare . "\n";
+    print OUT "d.o.f = " .$dof."\n";
+    
+    
+    # chaeck if computed p value is lower than 0.05 
+    if ($dof >= 1 && $dof <= 30)
+    {
+        # 2.2 there is a correlation between SNP allele and distinct mRNA - print result
+        $passingChiSquareValue = $ChiSquareValue{$dof};
+        print OUT "P.V = ".$passingChiSquareValue."\n";
+        if (($ChiSquare >= $passingChiSquareValue) && ($expTableHasValueLowerThanFive == 0))
+        {
+            print OUT "Corralation found: Yes\n";
+        }
+        else
+        {
+            print OUT "Corralation found: No\n";
+        }
+    }
+    print OUT "\n"; 
+    close(IN);
+    open(IN, "human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type") or die "Could not open human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type";  # UCSC table of alternative events - size: 91,223
+    for($k = 0; $k < 9; $k++)
+    {
+        $line = <IN>;
+    }
+}
+
+close(OUT);
+close(IN);
+
+
+
+#script #14 appendix P
+
+#! /usr/bin/perl-w
+
+#***********************- Description -*************************
+# this script finds intersection of gene between the 8 tables
+#***************************************************************
+
+open(IN, "human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type") or die "Could not open human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splirelevancing_type";   # UCSC table of alternative events - size: 91,223
+open(OUT, ">GenePerEachStatTest") or die "Could not open statTest4";    # output file
+
+
+
+@TableArr;
+$counter = 1;
+%totalGeneHash = ();
+$totalGeneCounter = 0;
+%totalRepeatedGeneHash = ();
+$totalRepeatedGeneCounter = 0;
+
+
+
+# an arr that contains the tables that we will preforme the second statistic test on
+
+$TableArr[0] = "cassetteExon\tg!t\tStartOfExon";
+$TableArr[1] = "altThreePrime\tc!t\tEndOfExon";
+$TableArr[2] = "cassetteExon\tc!t\tEndOfExon";
+$TableArr[3] = "retainedIntron\ta!g\tEndOfExon";
+$TableArr[4] = "altFinish\ta!c!g\tEndOfExon";
+$TableArr[5] = "retainedIntron\tc!t\tEndOfExon";
+$TableArr[6] = "bleedingExon\ta!g\tEndOfExon";
+$TableArr[7] = "bleedingExon\tc!t\tEndOfExon";
+$TableArrLen = @TableArr;
+
+
+@GeneSizeArr;   # this array will hold the amount of genes for each table that describs above
+@GenesByTableArr; # the value is the genes that belongs to this TableArr
+%HashByGeneId; # the key is the Gene Id and the value is the table that he is in
+%HashForGeneData; # the key is the Gene Id and the value is the alternative splicing type, allel and end of beginninng of the exon
+
+#takes line until the relevant line
+for($i = 0; $i < 9; $i++)
+{
+    $line = <IN>;
+}
+
+#a loop that pases on the wanted tabel that are contained in tha array TableArr above
+for($i = 0; $i < $TableArrLen; $i++) 
+{
+    $GeneCounter = 0; #will count the genes in each of the tables
+    @TableArrData = split(/\t/,$TableArr[$i]);  #holds the relevant information about the current test 
+    $altTypeFromTableArr = $TableArrData[0];
+    $allels = $TableArrData[1];
+    @allelsArrFromTableArr = split(/!/,$allels); #thhis array holds all the allels that are relevant for the test by splitig the spcific part of the line
+    $numberOfAllelsInArr = @allelsArrFromTableArr;
+    $StartOrEndOfExonFromTableArr = $TableArrData[2];
+    # priting a titel 
+    print OUT "table number ".$counter."\t";
+    $counter++;
+    print OUT $altTypeFromTableArr." ";
+    for( $c = 0; $c < $numberOfAllelsInArr; $c++)
+    {
+        print OUT $allelsArrFromTableArr[$c]." ";
+    }
+    print OUT $StartOrEndOfExonFromTableArr."\n\n";
+        
+    #pessing on all the line in the input file 
+    while(defined $line) 
+    {
+        if($line =~ /^chr/)
+        {
+            @GeneArray = split(/\t/,$line); # splitting the line to the columns
+            $StartOrEndOfExon = $GeneArray[18];
+            $geneID = $GeneArray[4];
+            chomp($StartOrEndOfExon);
+            $GeneLine = $line;
+            $curGeneLine = "";
+        
+            $line = <IN>;
+            while( $line =~ /^!/)
+            {
+                $line = <IN>;
+            }
+        }
+        while( $line =~ /^>/)   #if the line represents a sequence (mRNA or EST)
+        {
+            $line = <IN>;
+            $allel = substr($line,1,1);
+            $line = <IN>;
+            $NumberOfAltTypesPerSeq = 0;
+            while( $line =~ /^#/) #taking all the alternative splicing types of a certain sequence
+            {   
+                @LineArray = split(/\t/,$line); # splitting the line to the columns
+                $altType = $LineArray[4];
+                chomp($altType);
+                $AltTypeArr[$NumberOfAltTypesPerSeq] = $altType; # an arr that contains all the alternative splicing types
+                $NumberOfAltTypesPerSeq++;
+                $line = <IN>;
+            }           
+            
+            # checks if the location of the SNP in the exon is compatible to the location in the test information from the array above
+            if( $StartOrEndOfExon eq $StartOrEndOfExonFromTableArr)
+            {   
+                #checks if the the allel appears in one of the relevant allels of the test
+                for($j = 0; $j < $numberOfAllelsInArr; $j++)
+                {
+                    #checks if the the alternative splicing type appears in one of types of the sequence
+                    for($b = 0; $b < $NumberOfAltTypesPerSeq; $b++) #checking if ther is a match for each type of splicing in the mRNA/EST
+                    {
+                        if($allel eq $allelsArrFromTableArr[$j])
+                        {   
+                            # counter for the sum of the table for further calculation
+                            $sumOfOBSInstances++;
+                            if( $AltTypeArr[$b] eq $altTypeFromTableArr)
+                            {   
+                                #checks if this gene line was alredy printed
+                                if( $curGeneLine ne $GeneLine)
+                                {
+                                    $curGeneLine = $GeneLine;
+                                    $GeneCounter++;
+                                    print OUT $GeneLine."\n";
+                                    if( defined $GenesByTableArr[$i])
+                                    {
+                                        $GenesByTableArr[$i] = $GenesByTableArr[$i]."\t".$geneID;
+                                    }
+                                    else
+                                    {
+                                        $GenesByTableArr[$i] = $geneID;
+                                    }
+                                    $flag = 0;
+                                    #here we save the information about the the tables that the gene appears in and the information about the gene it self in a different hash
+                                    if(defined $HashByGeneId{$geneID})
+                                    {
+                                        @GeneValue = split(/\s/,$HashByGeneId{$geneID}); # splitting the line to the columns
+                                        $Len = @GeneValue;
+                                        for($c = 0; $c < $Len; $c++)
+                                        {
+                                            if( $i == $GeneValue[$c])
+                                            {
+                                                $flag = 1;
+                                            }
+                                        }
+                                        if($flag == 0)
+                                        {
+                                            $temp = $i + 1;
+                                            $HashByGeneId{$geneID} = $HashByGeneId{$geneID}." ".$temp;  #saves the information about the tables that the gene appears
+                                        }
+                                        # saves the relevant information about the gene
+                                        $HashForGeneData{$geneID} = $HashForGeneData{$geneID}."\t".$AltTypeArr[$b]." "; 
+                                        for($d = 0; $d < @allelsArrFromTableArr; $d++)
+                                        {
+                                            $HashForGeneData{$geneID} = $HashForGeneData{$geneID}.$allelsArrFromTableArr[$d]." ";
+                                        }
+                                        $HashForGeneData{$geneID} = $HashForGeneData{$geneID}.$StartOrEndOfExonFromTableArr;    
+                                    }
+                                    else
+                                    {
+                                        $temp = $i + 1;
+                                        $HashByGeneId{$geneID} = $temp; #saves the information about the tables that the gene appears
+                                        # saves the relevant information about the gene
+                                        $HashForGeneData{$geneID} = $AltTypeArr[$b]." ";
+                                        for($d = 0; $d < @allelsArrFromTableArr; $d++)
+                                        {
+                                            $HashForGeneData{$geneID} = $HashForGeneData{$geneID}.$allelsArrFromTableArr[$d]." ";
+                                        }
+                                        $HashForGeneData{$geneID} = $HashForGeneData{$geneID}.$StartOrEndOfExonFromTableArr;
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        $line = <IN>;
+        
+    }
+    close(IN);
+    open(IN, "human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type") or die "Could not open human_mrna_est_UCSC_filtered_by_SNP_with_allele_with_splicing_type";  # UCSC table of alternative events - size: 91,223
+    
+    for($k = 0; $k < 9; $k++)
+    {
+        $line = <IN>;
+    }
+    $GeneSizeArr[$i] = $GeneCounter;
+    print OUT "number of genes: ".$GeneCounter."\n";
+}
+
+# sum up the total amount of all genes with repetition
+$sum = 0;
+for($t = 0; $t < @GeneSizeArr; $t++)
+{
+    $sum = $sum + $GeneSizeArr[$t];
+}
+print OUT "total sum of all genes with repetition: ".$sum."\n";
+
+print OUT "Overlapping Genes\n";
+print OUT "\nGeneId\tNumberOfTables\tTheTables\tTheAltType+Allels\n";
+$counterOfOverLapGenes = 0;
+
+#prints out the genes that appear in more then 1 table
+foreach $gene ( keys %HashByGeneId)
+{
+    @GeneValue = split(/\s/,$HashByGeneId{$gene}); # splitting the line to the columns
+    $numberOfTables = @GeneValue;
+    
+    if($numberOfTables > 1)
+    {
+        $counterOfOverLapGenes++;
+        print OUT $gene."\t".$numberOfTables."\t".$HashByGeneId{$gene}."\t".$HashForGeneData{$gene}."\n";
+    }
+}
+
+#prints out the total anount of gene per test and total amout of overlapping genes per test
+print OUT "the number of overlapp genes: ".$counterOfOverLapGenes."\n";
+for( $i = 0; $i < $TableArrLen; $i++)
+{
+    $counter = 0;
+    #checks how many overlapping genes there are in the spcific case
+    @GenesPerTableArr = split(/\t/,$GenesByTableArr[$i]);
+    $genesPerTableArrLen = @GenesPerTableArr;
+    
+    for($j = 0; $j < $genesPerTableArrLen; $j++)
+    {
+        foreach $item (keys %HashByGeneId)
+        {
+            @GeneValue = split(/\s/,$HashByGeneId{$item}); # splitting the line to the columns
+            $numberOfTables = @GeneValue;
+            
+            if($numberOfTables > 1)
+            {
+                if($GenesPerTableArr[$j] eq $item)
+                {
+                    $counter++;
+                }   
+            }
+        }
+    }
+    print OUT $TableArr[$i]."\nTotal gene number is: ".$GeneSizeArr[$i]." the number of genes that appears in more the 1 table is: ".$counter."\n";
+}
+
+
+close(OUT);
+close(IN);
+
+
+
